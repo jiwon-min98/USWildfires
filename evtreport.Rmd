@@ -1,0 +1,111 @@
+---
+title: "Untitled"
+author: "Ji Won"
+date: "5/22/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyverse)
+library(maps)
+library(maptools)
+library(mgcv)
+library(extRemes)
+library(ROCR)
+library(xgboost)
+library(gbm)
+library(VGAM)
+library(caret)
+library(naivebayes)
+library(extRemes)
+library(evmix)
+```
+
+
+```{r cars}
+load("~/Desktop/Project/data_train.RData")
+data_train_DF<- data_train_DF %>%
+  mutate(wind = sqrt(clim1^2 + clim2^2)) %>%
+  subset(select = -c(clim1, clim2) )
+
+
+data <- filter(data_train_DF, year %% 2 == 1)
+
+data_scaled <- as.data.frame(scale(data[,c(8:36)]))
+data_scaled <- cbind(data[,c(1:7)], data_scaled)
+
+smp_size <- floor(0.75 * nrow(data_scaled))
+
+set.seed(123)
+train_ind <- sample(seq_len(nrow(data_scaled)), size = smp_size)
+train <- data_scaled[train_ind, ]
+test <- data_scaled[-train_ind, ]
+
+train<- train%>%
+  group_by(lon, lat, month)%>%
+  mutate(mean_monthly_CNT= mean(CNT))
+
+for (m in 3:9){
+  for (L in seq(-124.75, -66.75, 0.5)){
+    for (l in seq(25.25, 49.25, 0.5)){
+      test$mean_monthly_CNT[test$lon==L & test$lat==l & test$month==m] <- 
+        train$mean_monthly_CNT[train$lon==L & train$lat==l & train$month==m][1]
+    }
+  }
+} 
+
+rm(L, l, m, data_train_DF, train_ind, data, smp_size)
+```
+
+
+```{r}
+mrlplot(data_scaled$BA, main="Mean Residual Life Plot")
+mrlplot(filter(data_scaled,month == 3)$BA, main="Mean Residual Life Plot")
+mrlplot(filter(data_scaled,month == 4)$BA, main="Mean Residual Life Plot")
+mrlplot(filter(data_scaled,month == 5)$BA, main="Mean Residual Life Plot")
+mrlplot(filter(data_scaled,month == 6)$BA, main="Mean Residual Life Plot")
+mrlplot(filter(data_scaled,month == 7)$BA, main="Mean Residual Life Plot")
+mrlplot(filter(data_scaled,month == 8)$BA, main="Mean Residual Life Plot")
+mrlplot(filter(data_scaled,month == 9)$BA, main="Mean Residual Life Plot")
+```
+
+```{r}
+mrlplot(filter(data_scaled, year == 1993|1995|1997)$BA, main="Mean Residual Life Plot")
+rug(filter(data_scaled, year == 1993|1995|1997)$BA)
+mrlplot(filter(data_scaled, year == 2001|2003|2005)$BA, main="Mean Residual Life Plot")
+```
+
+```{r the number of exceedances over different thresholds}
+nrow(data_scaled %>% filter(BA > 2000))
+nrow(data_scaled %>% filter(BA > 5000))
+nrow(data_scaled %>% filter(BA > 10000))
+nrow(data_scaled %>% filter(BA > 20000))
+```
+
+
+```{r}
+model1 <-  vglm(BA~., family = gpd(threshold = 10000), link = "log", data = train, subset = BA > 10000)
+summary(model1)
+
+model2<-  vglm(BA~., family = gpd(threshold = 2000), link = "log", data = train, subset = BA > 2000)
+summary(model2)
+
+model3 <-  vglm(BA~., family = gpd(threshold = 20000), link = "log", data = train, subset = BA > 20000)
+summary(model1)
+
+```
+
+
+```{r}
+tcplot(data_scaled$BA)
+tshapeplot(data_scaled$BA, tlim = c(0, 30000))
+tscaleplot(data_scaled$BA, tlim = c(0, 30000), try.thresh = c(2000, 10000, 20000))
+tcplot(data_scaled$BA, tlim = c(0, 30000), try.thresh = c(2000, 10000, 20000))
+
+evd::tcplot(data_scaled$BA, tlim = c(0, 100000))
+evd::tcplot(filter(data_scaled, year == 2001|2003|2005)$BA, tlim = c(0, 100000))
+
+```
+

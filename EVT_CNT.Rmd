@@ -1,0 +1,284 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(dplyr)
+library(tidyverse)
+library(maps)
+library(maptools)
+library(mgcv)
+library(extRemes)
+library(ROCR)
+library(VGAM)
+```
+
+
+```{r}
+
+load("~/Desktop/Project/data_train.RData")
+data_train_DF<- data_train_DF %>%
+  mutate(wind = sqrt(clim1^2 + clim2^2)) %>%
+  dplyr::rename(dew_temp = clim3,
+         temp = clim4,
+         pot_evap = clim5,
+         solar_rad = clim6,
+         thermal_rad = clim7,
+         pressure = clim8,
+         evap = clim9,
+         precip = clim10) %>%
+  subset(select = -c(clim1, clim2) )
+
+data_scaled <- as.data.frame(scale(data_train_DF[,c(26:36)]))
+data_scaled <- cbind(data_train_DF[,c(1:25)], data_scaled)
+
+dat_scaled$date <- with(data_train_DF, sprintf("%d-%02d", year, month))
+train_data <- filter(dat_scaled, year == 1995| year== 2005 | year ==2015)
+odd_years <- filter(dat_scaled, year %%2 ==1)
+test <- filter(dat_scaled, year == 1997 | year == 2007)
+
+train_data<- train_data %>%
+  group_by(lon, lat, month) %>%
+  mutate(mean_monthly_CNT= mean(CNT))
+
+for (m in 3:9){
+  for (L in seq(-124.75, -66.75, 0.5)){
+    for (l in seq(25.25, 49.25, 0.5)){
+      test$mean_monthly_CNT[test$lon==L & test$lat==l & test$month==m] <- 
+        train_data$mean_monthly_CNT[train_data$lon==L & train_data$lat==l & train_data$month==m][1]
+    }
+  }
+}
+
+rm(L, l, m, data_train_DF)
+
+
+
+
+```
+
+```{r}
+threshold <- 50
+```
+
+```{r}
+
+train_data$overthreshold <- ifelse(train_data$CNT > threshold, 1, 0)
+test$overthreshold <- ifelse(test$CNT > threshold, 1, 0)
+```
+
+# GLM LOGISTIC (for BA > threshold)
+```{r}
+
+overthreshold_glm <- glm(formula = overthreshold ~ lon + lat + month + solar_rad + thermal_rad + altiSD + altiMean + lc18 + lc1 + lc7 + lc8 +lc15 + lc5 + lc12 + mean_monthly_CNT, family = binomial, data = train_data)
+
+summary(overthreshold_glm) 
+
+overthresholdpredict <- predict(overthreshold_glm, newdata = test, type = "response") #predicting prb that BA > threshold
+
+test$overthresholdpredict <- overthresholdpredict
+
+filter(test, overthresholdpredict > 0.10)
+
+```
+
+# GAM LOGISTIC (for BA > threshold)
+```{r}
+overthreshold_bam <- bam(overthreshold ~ te(lat,lon) + s(temp) + s(pressure) + s(precip) + s(pot_evap)+ s(solar_rad) + s(wind) + mean_monthly_CNT, data = train_data, method = "REML", family = binomial)
+
+overthresholdpredict1 <- predict(overthreshold_bam, newdata = test, type = "response") #predicting prb that BA > threshold
+head(overthresholdpredict1)
+
+test$overthresholdpredict1 <- overthresholdpredict1
+
+
+filter(test, overthresholdpredict1 > 0.10)
+```
+
+
+```{r}
+m_glm <- glm(CNT ~ lon+lat+thermal_rad+ altiMean+ altiSD+temp+ solar_rad+pressure+ thermal_rad+ wind+ lc1+lc2+lc3+lc5+lc6+lc7+lc8+lc11+lc12+lc13+lc15+lc16+lc18 , family= "poisson", data = train_data)
+summary(m_glm)
+
+p_glm <- predict_cnt_prob_poisson(m_glm, test)
+s_glm <- get_score_cnt(p_glm, test$CNT, u_cnt, weights_cnt)
+
+```
+
+
+```{r}
+
+m_bam <- bam(CNT~ te(lat,lon) + s(temp) +s(dew_temp) + s(pressure) + s(precip) + s(pot_evap)+s(solar_rad) + s(altiMean, k = 20) + s(area) +s(lc1) + s(lc2, k = 20) + s(lc5)+s(lc7)+  s(lc9)+ s(lc11, k = 20) + s(lc12, k = 20) + s(lc13) + s(lc14) + s(lc16)+ s(lc17)+s(lc18, k = 20), data = train_data, method = "REML", family = poisson)
+
+p_bam <- predict_cnt_prob_poisson(m_bam, test)
+s_bam <- get_score_cnt(p_bam, test$CNT, u_cnt, weights_cnt)
+
+```
+
+
+```{r}
+library(gbm)
+m_gbm <- gbm(CNT~ .-BA-date-overthreshold, data = train_data, distribution = "poisson",interaction.depth = 6, n.trees=10000)
+
+p_gbm <- predict_cnt_prob_poisson(m_gbm, test)
+s_gbm <- get_score_cnt(p_gbm, test$CNT, u_cnt, weights_cnt)
+
+```
+
+
+
+
+# VGAM for GPD model
+
+```{r}
+
+modelvglm <- vglm(CNT ~ lon+lc1 + lc7 + altiMean + temp +solar_rad + lc2 + evap +lc18 + lc10 + month + precip, family = gpd(threshold = threshold), link = "log", data = train_data, subset = CNT > threshold)
+summary(modelvglm)
+
+```
+
+
+# GLM logistic (for > threshold) & glm for CNT
+```{r}
+new_glm <- test %>% filter(overthresholdpredict > 0.10) 
+rows_glm <- which(test$overthresholdpredict > 0.10)
+
+predictedvglm <- predict(modelvglm, untransform = TRUE, newdata = new_glm) #predict with gpd the selected rows
+
+u_cnt_threshold <- subset(u_cnt, u_cnt > threshold)
+
+x = matrix(0, nrow(new_glm), length(u_cnt_threshold))
+for (i in 1:nrow(predictedvglm)){
+  for (j in 1:length(u_cnt_threshold))
+    x[i,j] <- pgpd(u_cnt_threshold[j], scale = predictedvglm[i,1] , shape = predictedvglm[i,2]) 
+    #prob that CNT <  u_ba_threshold given that CNT > threshold
+}
+
+prob_threshold = matrix(0, nrow(x), length(u_cnt_threshold))
+for (i in 1:nrow(x)){
+  prob_threshold[i,] <- x[i,] * new_glm$overthresholdpredict[i]
+}
+
+p_glm[rows_glm, 24:28] <- p_glm[rows_glm, 23] + prob_threshold
+
+
+p1 <- p_glm
+q <- p_glm[rows_glm,28] -1
+p_glm[rows_glm,] <- p1[rows_glm, ]- q
+
+for (i in 1:24521){
+  for(j in 1:28){
+    if (p_glm[i,j] < 0) {
+      p_glm[i,j] <- 0
+    }
+  }
+}
+
+for (i in 1:nrow(test)){
+  if (test$CNT[i] == 0){
+    for (j in 1:ncol(p_glm))
+      p_glm[i,j] = 1
+  }
+}
+
+score_glm <- get_score_cnt(p_glm, test$CNT, u_cnt, weights_cnt)
+
+
+```
+
+
+# glm logistic & gbm
+```{r}
+new_glm <- test %>% filter(overthresholdpredict > 0.15) 
+rows_glm <- which(test$overthresholdpredict > 0.15)
+
+predictedvglm <- predict(modelvglm, untransform = TRUE, newdata = new_glm) #predict with gpd the selected rows
+
+u_cnt_threshold <- subset(u_cnt, u_cnt > threshold)
+
+x = matrix(0, nrow(new_glm), length(u_cnt_threshold))
+for (i in 1:nrow(predictedvglm)){
+  for (j in 1:length(u_cnt_threshold))
+    x[i,j] <- pgpd(u_cnt_threshold[j], scale = predictedvglm[i,1] , shape = predictedvglm[i,2]) 
+}
+
+prob_threshold = matrix(0, nrow(x), length(u_cnt_threshold))
+for (i in 1:nrow(x)){
+  prob_threshold[i,] <- x[i,] * new_glm$overthresholdpredict[i]
+}
+
+p_gbm[rows_glm, 24:28] <- p_gbm[rows_glm, 23] +prob_threshold
+
+
+p1 <- p_gbm
+q <- p_gbm[rows_glm,28] -1
+p_gbm[rows_glm,] <- p1[rows_glm, ]- q
+
+for (i in 1:24521){
+  for(j in 1:28){
+    if (p_gbm[i,j] < 0) {
+      p_gbm[i,j] <- 0
+    }
+  }
+}
+
+for (i in 1:nrow(test)){
+  if (test$CNT[i] == 0){
+    for (j in 1:ncol(p_gbm))
+      p_gbm[i,j] = 1
+  }
+}
+
+score_glm2 <- get_score_cnt(p_gbm, test$CNT, u_cnt, weights_cnt)
+
+
+```
+
+
+
+```{r}
+new_bam <- test %>% filter(overthresholdpredict1 > 0.15) #rows where prb exceed in threshold > 0.5
+rows_bam <- which(test$overthresholdpredict1 > 0.15)
+
+predictedvglm <- predict(modelvglm, untransform = TRUE, newdata = new_bam) #predict with gpd the selected rows
+
+x = matrix(0, nrow(new_bam), length(u_cnt_threshold))
+for (i in 1:nrow(predictedvglm)){
+  for (j in 1:length(u_cnt_threshold))
+    x[i,j] <- pgpd(u_cnt_threshold[j], scale = predictedvglm[i,1] , shape = predictedvglm[i,2]) 
+    #prob that BA <  u_ba_threshold given that BA > threshold
+}
+
+prob_threshold = matrix(0, nrow(x), length(u_cnt_threshold))
+for (i in 1:nrow(x)){
+  prob_threshold[i,] <- x[i,] * new_bam$overthresholdpredict1[i]
+}
+
+
+p_gbm[rows_bam, 24:28] <- p_gbm[rows_bam, 23] +prob_threshold
+
+p1 <- p_gbm
+q <- p_gbm[rows_bam,28] -1
+p_gbm[rows_bam,] <- p1[rows_bam, ]- q
+
+for (i in rows_bam){
+  for(j in 1:28){
+    if (p_gbm[i,j] < 0) {
+      p_gbm[i,j] <- 0
+    }
+  }
+}
+score_bam2 <- get_score_ba(p_gbm, test$CNT, u_cnt, weights_cnt)
+
+```
+
+
+
+
+
+
+
+
+
+

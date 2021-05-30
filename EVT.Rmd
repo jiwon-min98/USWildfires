@@ -1,0 +1,420 @@
+---
+title: ''
+author: "Ji Won"
+date: "3/24/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyverse)
+library(maps)
+library(maptools)
+library(extRemes)
+```
+
+
+
+```{r, echo =FALSE}
+rm(list= ls())
+load("~/Desktop/Project/data_train.RData")
+data_train_DF<- data_train_DF %>%
+  mutate(wind = sqrt(clim1^2 + clim2^2)) %>%
+  dplyr::rename(dew_temp = clim3,
+         temp = clim4,
+         pot_evap = clim5,
+         solar_rad = clim6,
+         thermal_rad = clim7,
+         pressure = clim8,
+         evap = clim9,
+         precip = clim10) %>%
+  subset(select = -c(clim1, clim2) )
+
+lonlat_to_state_sp <- function(pointsDF) {
+  states <- map('state', fill=TRUE, col="transparent", plot=FALSE)
+  IDs <- sapply(strsplit(states$names, ":"), function(x) x[1])
+  states_sp <- map2SpatialPolygons(states, IDs=IDs,
+                                   proj4string=CRS("+proj=longlat +datum=WGS84"))
+
+  pointsSP <- SpatialPoints(pointsDF, 
+                            proj4string=CRS("+proj=longlat +datum=WGS84"))
+ 
+  indices <- over(pointsSP, states_sp)
+
+  stateNames <- sapply(states_sp@polygons, function(x) x@ID)
+  stateNames[indices]
+}
+
+coord <- cbind(data_train_DF$lon, data_train_DF$lat)
+state <- lonlat_to_state_sp(coord)
+
+data_train_DF$state <- state
+
+
+odd_years <- data_train_DF %>% filter(year %%2 ==1)
+odd_years$date <- with(odd_years, sprintf("%d-%02d", year, month))
+maxBA <- odd_years %>% 
+  group_by(date) %>%
+  dplyr::summarise(max_BA = max(BA))
+
+
+land_cover <- odd_years %>% select(starts_with("lc"))
+largest_lc <- colnames(land_cover)[max.col(land_cover,ties.method="first")]
+odd_years$largest_lc <- largest_lc
+rm(land_cover)
+```
+
+
+```{r functions, echo = FALSE}
+BA_threshold <- function(x, threshold){
+  ggplot(x) +
+    geom_point(aes(date, BA))+
+    geom_abline(slope = 0, intercept = threshold, colour = "red")+
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=1))
+}
+
+
+diag <- function(x){
+  plot(x, type = "probprob")
+  plot(x, type = "qq")
+  #plot(x, type = "rl")
+  #plot(x, type = "Zplot")
+  plot(x, type = "density")
+}
+```
+
+### Burnt area
+
+## All U.S.
+Plot of all burnt area over time (odd years & months March-Sept (294252 points)) and the plot of maximum burnt area of each month (84 points).
+
+```{r, echo = FALSE}
+ggplot(odd_years, aes(date, BA))+
+  geom_point()+
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=1))
+
+ggplot(maxBA, aes(date, max_BA)) +
+  geom_point()+
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=1))
+min(maxBA$max_BA)
+x<- which.min(maxBA$max_BA)
+maxBA$date[x]
+```
+
+
+#Block Maxima method
+Blocks of months were used (maxima of months were taken) to fit GEV distribution and Gumbel distribution.The following show diagnostic plots as well as the parameter estimations using maximum likelihood:
+
+
+```{r , echo = FALSE}
+fit1 <- fevd(maxBA$max_BA, method = "MLE", type = "GEV", period.basis = "month")
+fit2 <- fevd(maxBA$max_BA, method = "MLE", type = "Gumbel",period.basis = "month")
+diag(fit1)
+diag(fit2)
+distill(fit1)
+distill(fit2)
+
+```
+
+#POT method
+
+Here all BA data of odd years, months from March to Sep are used to fit Generalized Pareto distribution. 
+The mean residual life plot and the threshold range plot are graphed below in an attempt to determine the threshold.
+
+```{r}
+mrlplot(odd_years$BA, main="Mean Residual Life Plot")
+#threshrange.plot(odd_years$BA, r = c(1e+2, 4e+5), nint = 30)
+```
+
+
+The following show diagnostic plots as well as the parameter estimations using maximum likelihood:
+
+```{r , echo = FALSE}
+odd_years <- odd_years %>%filter(BA > 0)
+thresh90 <- quantile(odd_years$BA, 0.90)
+model<-fevd(odd_years$BA,threshold =thresh90,type="GP")
+diag(model)
+plot(model, type = "rl")
+distill(model)
+```
+
+## Taking one latitude (25.25)
+Summaries of latitudes and longitudes:
+```{r , echo = FALSE}
+summary(odd_years$lat)
+summary(odd_years$lon)
+```
+
+# POT method
+Taking only one latitude from the data, and using the POT method to fit generalized Pareto distribution.
+
+```{r lat = 25.25, echo = FALSE}
+x1 <- filter(odd_years, lat == 25.25)
+
+mrlplot(x1$BA, main="Mean Residual Life Plot")
+#threshrange.plot(x1$BA, r = c(100,5000), nint = 80)
+BA_threshold(x1, 300)
+
+x1.gpd <- fevd(x1$BA, type="GP", threshold=300)
+diag(x1.gpd)
+plot(x1.gpd, type = "rl")
+summary(x1.gpd)
+```
+
+
+# Block maxima method
+
+```{r, echo = FALSE}
+x2 <- x1 %>% 
+  group_by(date) %>%
+  dplyr::summarise(maxBA = max(BA))
+
+ggplot(x2, aes(date, maxBA)) +
+  geom_point()+
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=1))
+
+x1.gev <- fevd(x2$maxBA, method = "MLE", type="GEV")
+x1.gumbel <- fevd(x2$maxBA, method = "MLE", type="Gumbel")
+
+
+diag(x1.gev)
+
+summary(x1.gev)
+
+
+```
+## California
+Taking only the data of California, and using the POT method  to fit generalized Pareto distribution.
+
+```{r California, echo = FALSE}
+california <- odd_years %>% filter(state == "california")
+mrlplot(california$BA, main="Mean Residual Life Plot")
+thres= 1e+04
+BA_threshold(california, thres)
+california.gpd <- fevd(california$BA, type="GP", threshold = thres)
+
+
+diag(california.gpd)
+plot(california.gpd, type = "rl")
+summary(california.gpd)
+
+
+```
+
+```{r}
+cali <- california %>% 
+  group_by(date) %>%
+  dplyr::summarise(maxBA = max(BA))
+
+
+ggplot(cali, aes(date, maxBA)) +
+  geom_point()+
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=1))
+
+cali.gev <- fevd(cali$maxBA, method = "MLE", type="GEV")
+cali.gumbel <- fevd(cali$maxBA,method = "MLE", type="Gumbel")
+
+diag(cali.gev)
+diag(cali.gumbel)
+
+
+summary(cali.gev)
+summary(cali.gumbel)
+
+```
+
+
+##Shrubland
+
+
+
+```{r, echo = FALSE}
+shrub <- odd_years %>% 
+  dplyr::filter(largest_lc == "lc11")
+
+
+ggplot(odd_years, aes(lon, lat, colour = largest_lc =="lc11")) +
+  geom_point() +
+  theme_classic()
+
+
+ggplot(shrub, aes(lon, lat, colour = BA)) +
+  geom_point() +
+  theme_classic() +
+  scale_colour_gradientn(colours = rev(rainbow(3)), trans = "log10")
+```
+
+```{r, echo = FALSE}
+
+
+mrlplot(shrub$BA, main="Mean Residual Life Plot")
+thres= 5e+04
+BA_threshold(shrub, thres)
+shrub.gpd <- fevd(shrub$BA, type="GP", threshold = thres)
+
+
+diag(shrub.gpd)
+summary(shrub.gpd)
+
+```
+## Mosaic Tree Shrub : lc10
+```{r, echo = FALSE}
+MosaicTS <- odd_years %>% filter(largest_lc == "lc10")
+lc10p <- data_train_DF %>% filter(lc10 > 0.15)
+print(lc10p)
+```
+
+
+
+# lon (-85,-82) lat (33,36)
+```{r, echo = FALSE}
+mts <- odd_years %>% filter( lon > -85, lon < -82, lat <36, lat > 32)
+ggplot(mts, aes(date, CNT)) +
+  geom_bar(stat ="identity") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=1))
+
+ggplot(mts,aes(date, BA ))+
+  geom_bar(stat ="identity") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=1)) 
+
+mtsavg <- colMeans(mts[,-c(3,4,6,7,39,38,37)])
+print(mtsavg)
+```
+
+
+```{r, echo = FALSE}
+
+ggplot(mts, aes(lon, lat, colour = BA)) +
+  geom_point() +
+  theme_classic() +
+  scale_colour_gradientn(colours = rev(rainbow(3)), trans = "log10") +
+  facet_wrap(vars(year))
+```
+
+```{r}
+
+mrlplot(mts$BA, main="Mean Residual Life Plot")
+thres= 200
+BA_threshold(mts, thres)
+mts.gpd <- fevd(mts$BA, type="GP", threshold = thres)
+
+
+diag(mts.gpd)
+plot(mts.gpd, type = "rl")
+summary(mts.gpd)
+```
+
+```{r}
+mtsmax <- mts %>% 
+  group_by(date) %>%
+  dplyr::summarise(maxBA = max(BA))
+
+ggplot(mtsmax, aes(date, maxBA)) +
+  geom_point()+
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=1))
+
+mts.gev <- fevd(mtsmax$maxBA, method = "MLE", type="GEV")
+mts.gumbel <- fevd(mtsmax$maxBA, method = "MLE", type="Gumbel")
+
+
+diag(mts.gev)
+diag(mts.gumbel)
+
+summary(mts.gev)
+```
+
+
+## tree needleleave evergreen lc7
+
+```{r}
+TNE <- odd_years %>% filter(largest_lc == "lc7")
+
+ggplot(odd_years, aes(lon, lat, colour = largest_lc =="lc7")) +
+  geom_point() +
+  theme_classic()
+
+
+ggplot(TNE, aes(lon, lat, colour = BA)) +
+  geom_point() +
+  theme_classic() +
+  scale_colour_gradientn(colours = rev(rainbow(3)), trans = "log10")
+```
+
+```{r}
+
+mrlplot(TNE$BA, main="Mean Residual Life Plot")
+thres= 2e+4
+BA_threshold(TNE, thres)
+TNE.gpd <- fevd(TNE$BA, type="GP", threshold = thres)
+
+
+diag(TNE.gpd)
+#plot(TNE.gpd, type = "rl")
+summary(TNE.gpd)
+
+
+```
+
+
+
+
+
+
+
+##Grassland
+
+```{r}
+grass <- odd_years %>% filter(largest_lc == "lc12")
+
+ggplot(odd_years, aes(lon, lat, colour = largest_lc =="lc12")) +
+  geom_point() +
+  theme_classic()
+
+
+ggplot(grass, aes(lon, lat, colour = BA)) +
+  geom_point() +
+  theme_classic() +
+  scale_colour_gradientn(colours = rev(rainbow(3)), trans = "log10")
+```
+
+
+```{r}
+
+mrlplot(grass$BA, main="Mean Residual Life Plot")
+thres= 20000
+BA_threshold(grass, thres)
+grass.gpd <- fevd(grass$BA, type="GP", threshold = thres)
+
+
+diag(grass.gpd)
+plot(grass.gpd, type = "rl")
+summary(grass.gpd)
+
+```
+
+
+
+
+
+
+```{r}
+
+```
+
+
+
+
+
+```{r}
+
+```
+

@@ -1,0 +1,61 @@
+---
+title: "EVT plots"
+author: "Ji Won"
+date: "3/23/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(extRemes)
+library(logspline)
+```
+
+
+```{r}
+# Generate Gumbel Random numbers
+x = revd(10000,loc=0,scale=1,shape=0)
+hist(x,prob=T,xlab="(location = 0,scale = 1, shape =0)",main="Gumbel Distribution",ylab="f(x)",font=2,family="serif",font.lab=2,cex.lab=1.5)
+plot(logspline(x),add=T, col="red")
+```
+
+```{r}
+# Frechet distribution plot
+y = revd(10000,loc=0,scale=1,shape=0.2)
+hist(y,prob=T,ylim=c(0,0.4),xlab="(location = 0, scale = 1, shape = 0.2)",main="Frechet Distribution",ylab="f(x)",font=2,family="serif",font.lab=2,cex.lab=1.5)
+plot(logspline(y),add=T,col="red")
+#plot(logspline(x),add=T)
+```
+
+
+
+```{r}
+## Weibull Distribution Plot 
+z = revd(10000,loc=0,scale=1,shape=-0.6)
+hist(z,prob=T,ylim=c(0,0.5),xlab="(location = 0, scale = 1, shape = -0.6)",main="Weibull Distribution",ylab="f(x)",font=2,family="serif",font.lab=2,cex.lab=1.5)
+plot(logspline(z),add=T,col="red")
+```
+
+
+
+```{r}
+## rgev -
+   # Create and plot 1000 Weibull distributed rdv:
+  # r = rgev(n = 1000)
+   #plot(r, type = "l", col = "steelblue", main = "Weibull Series")
+  # grid()
+   
+## dgev - 
+   # Plot empirical density and compare with true density:
+   #hist(r[abs(r)<10], nclass = 25, freq = FALSE, xlab = "r",  xlim = c(-5,5), ylim = c(0,1.1), main = "Density")
+   #box()
+   x = seq(-10, 10, by = 0.01)
+   plot(x, dgev(x, loc = 0, scale = 1, shape = 0, log = FALSE),pch = 0, col = "steelblue",lty = 0)
+   plot(x, dgev(x, loc = 0, scale = 1, shape = 0, log = FALSE),pch = 0, col = "steelblue",lty = 0)
+
+```
+```{r}
+```
+
+
+```{r}
+```

@@ -1,0 +1,352 @@
+---
+title: "BA"
+author: "Ji Won"
+date: "5/13/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyverse)
+library(maps)
+library(maptools)
+library(mgcv)
+library(extRemes)
+library(ROCR)
+library(xgboost)
+library(gbm)
+```
+
+
+```{r cars}
+load("~/Desktop/Project/data_train.RData")
+data_train_DF<- data_train_DF %>%
+  mutate(wind = sqrt(clim1^2 + clim2^2)) %>%
+  dplyr::rename(dew_temp = clim3,
+         temp = clim4,
+         pot_evap = clim5,
+         solar_rad = clim6,
+         thermal_rad = clim7,
+         pressure = clim8,
+         evap = clim9,
+         precip = clim10) %>%
+  subset(select = -c(clim1, clim2) )
+
+dat_scaled <- as.data.frame(scale(data_train_DF[,c(8:36)]))
+dat_scaled <- cbind(data_train_DF[,c(1:7)], dat_scaled)
+
+train_data <- filter(dat_scaled, year == 1995| year== 2005 | year ==2015)
+test <- filter(dat_scaled, year == 1997 | year == 2007)
+
+train_data<- train_data%>%
+  group_by(lon, lat, month)%>%
+  mutate(mean_monthly_BA= mean(BA))
+
+train_data<- train_data%>%
+  group_by(lon, lat, month)%>%
+  mutate(mean_monthly_CNT= mean(CNT))
+
+for (m in 3:9){
+  for (L in seq(-124.75, -66.75, 0.5)){
+    for (l in seq(25.25, 49.25, 0.5)){
+      test$mean_monthly_BA[test$lon==L & test$lat==l & test$month==m] <- 
+        train_data$mean_monthly_BA[train_data$lon==L & train_data$lat==l & train_data$month==m][1]
+      test$mean_monthly_CNT[test$lon==L & test$lat==l & test$month==m] <- 
+        train_data$mean_monthly_CNT[train_data$lon==L & train_data$lat==l & train_data$month==m][1]
+    }
+  }
+} 
+
+
+rm(L, l, m, data_train_DF)
+```
+
+
+
+```{r}
+m_gbm_all <- gbm(log(BA+1) ~ .-CNT, data = train_data, distribution = "gaussian", interaction.depth = 6, n.trees=1000, n.minobsinnode = 2, shrinkage = 0.001)
+
+p_gbm_all <- predict_ba_prob_gaussian_gbm1(m_gbm_all, test)
+s_gbm <- get_score_ba(p_gbm_all, test$BA, u_ba, weights_ba)
+s_gbm
+```
+
+```{r}
+m_gbm1 <- gbm(log(BA+1) ~ .-CNT-mean_monthly_BA, data = train_data, distribution = "gaussian", interaction.depth = 6, n.trees=1000, n.minobsinnode = 2, shrinkage = 0.001)
+
+p_gbm1 <- predict_ba_prob_gaussian_gbm1(m_gbm1, test)
+s_gbm1 <- get_score_ba(p_gbm1, test$BA, u_ba, weights_ba)
+s_gbm1
+```
+
+
+```{r}
+m_gbm2 <- gbm(log(BA+1) ~ .-CNT-mean_monthly_BA, data = train_data, distribution = "gaussian", interaction.depth = 6, n.trees=1000, n.minobsinnode = 2, shrinkage = 0.01)
+
+p_gbm2 <- predict_ba_prob_gaussian_gbm1(m_gbm2, test)
+s_gbm2 <- get_score_ba(p_gbm2, test$BA, u_ba, weights_ba)
+s_gbm2
+```
+
+```{r}
+m_gbm3 <- gbm(log(BA+1) ~ .-CNT-mean_monthly_BA, data = train_data, distribution = "gaussian", interaction.depth = 6, n.trees=1000, n.minobsinnode = 10, shrinkage = 0.01)
+
+p_gbm3 <- predict_ba_prob_gaussian_gbm1(m_gbm3, test)
+s_gbm3 <- get_score_ba(p_gbm3, test$BA, u_ba, weights_ba)
+s_gbm3
+```
+
+```{r}
+m_gbm4 <- gbm(log(BA+1) ~ .-CNT-mean_monthly_BA, data = train_data, distribution = "gaussian", interaction.depth = 6, n.trees=1000, n.minobsinnode = 10, shrinkage = 0.1)
+
+p_gbm4 <- predict_ba_prob_gaussian_gbm1(m_gbm4, test)
+s_gbm4 <- get_score_ba(p_gbm4, test$BA, u_ba, weights_ba)
+s_gbm4
+
+
+```
+
+
+```{r}
+m_gbm5 <- gbm(log(BA+1) ~ .-CNT-mean_monthly_CNT-mean_monthly_BA, data = train_data, distribution = "gaussian", interaction.depth = 6, n.trees=1000, n.minobsinnode = 10, shrinkage = 0.1)
+
+p_gbm5 <- predict_ba_prob_gaussian_gbm1(m_gbm5, test)
+s_gbm5 <- get_score_ba(p_gbm5, test$BA, u_ba, weights_ba)
+s_gbm5
+```
+
+
+```{r}
+m_gbm6 <- gbm(log(BA+1) ~ .-CNT-mean_monthly_CNT, data = train_data, distribution = "gaussian", interaction.depth = 6, n.trees=1000, n.minobsinnode = 10, shrinkage = 0.1)
+
+p_gbm6 <- predict_ba_prob_gaussian_gbm1(m_gbm6, test)
+s_gbm6 <- get_score_ba(p_gbm6, test$BA, u_ba, weights_ba)
+s_gbm6
+```
+
+# including CNT
+```{r}
+m_gbm7 <- gbm(log(BA+1) ~., data = train_data, distribution = "gaussian", interaction.depth = 6, n.trees=1000, n.minobsinnode = 10, shrinkage = 0.1)
+
+p_gbm7 <- predict_ba_prob_gaussian_gbm1(m_gbm7, test)
+s_gbm7 <- get_score_ba(p_gbm7, test$BA, u_ba, weights_ba)
+s_gbm7
+```
+
+```{r}
+m_gbm8 <- gbm(log(BA+1) ~.-mean_monthly_BA, data = train_data, distribution = "gaussian", interaction.depth = 6, n.trees=1500, n.minobsinnode = 10, shrinkage = 0.1)
+
+p_gbm8 <- predict_ba_prob_gaussian_gbm1(m_gbm8, test)
+s_gbm8 <- get_score_ba(p_gbm8, test$BA, u_ba, weights_ba)
+s_gbm8
+```
+
+
+
+
+#Extremes
+```{r}
+threshold <- 2000
+train_data$overthreshold <- ifelse(train_data$BA > threshold, 1, 0)
+test$overthreshold <- ifelse(test$BA > threshold, 1, 0)
+
+filter(test, overthreshold == 1)
+```
+
+
+# xgboost with count
+```{r}
+train_var <- train_data %>% select(-c(BA,overthreshold, mean_monthly_BA,pressure,lc18))
+train_label <- train_data$overthreshold
+xgboost_cnt <- xgboost(data = as.matrix(train_var), label = train_label,  nrounds = 2, max_depth = 2, eta = 1,  learning_rate= 1, num_parallel_tree= 100, objective= 'binary:logistic',subsample= 0.8, num_boost_round=1)
+
+test_var <- test %>% select(-c(BA,overthreshold,pressure,xgboost_nocnt,cnt_overthreshold,nocnt_overthreshold,mean_monthly_BA,lc18))
+test_label <- test$overthreshold
+
+xgboostpredict_cnt <- predict(xgboost_cnt, newdata = as.matrix(test_var))
+
+
+test$xgboost_cnt <- xgboostpredict_cnt
+
+
+filter(test, xgboost_cnt > 0.05)
+filter(test, xgboost_cnt > 0.05 & BA > 2000)
+
+importance_matrix <- xgb.importance(model = xgboost)
+print(importance_matrix)
+
+
+```
+
+
+## xgboost without count
+```{r} 
+library(xgboost)
+train_var <- train_data %>% select(-c(BA,CNT,overthreshold, mean_monthly_BA,lc18))
+train_label <- train_data$overthreshold
+
+
+
+xgboost_nocnt <- xgboost(data = as.matrix(train_var), label = train_label,  nrounds = 2, max_depth = 2, eta = 1,  learning_rate= 1, num_parallel_tree= 100, objective= 'binary:logistic',subsample= 0.8, num_boost_round=1)
+
+
+# xgboost_nocnt <- xgboost(data = as.matrix(train_var), label = train_label,  max_depth = 2, eta = 1, nthread = 2, nrounds = 2,booster="gbboost", subsample=0.2,num_parallel_tree=100,num_boost_round=1, eval_metric="logloss", objective = "binary:logistic"
+
+test_var <- test %>% select(-c(BA,CNT,overthreshold,xgboost_cnt,xgboost_nocnt,cnt_overthreshold,nocnt_overthreshold,mean_monthly_BA,lc18))
+test_label <- test$overthreshold
+
+xgboostpredict_nocnt <- predict(xgboost_nocnt, newdata = as.matrix(test_var))
+
+
+test$xgboost_nocnt <- xgboostpredict_nocnt
+
+
+filter(test, xgboost_nocnt > 0.05 & CNT !=0 )
+filter(test, xgboost_nocnt > 0.05 & CNT!=0 & BA > 2000)
+
+importance_matrix <- xgb.importance(model = xgboost)
+print(importance_matrix)
+
+
+```
+
+
+
+
+
+
+
+
+```{r}
+train <- train_data %>% filter(BA <= threshold)
+```
+
+
+#gbm without count training on BA <= threshold
+```{r}
+m_gbm_nocnt <- gbm(log(BA+1) ~ .-CNT-mean_monthly_BA-overthreshold, data = train, distribution = "gaussian", interaction.depth = 6, n.trees=1000, n.minobsinnode = 10, shrinkage = 0.1)
+
+p_gbm_nocnt <- predict_ba_prob_gaussian_gbm1(m_gbm_nocnt, test)
+```
+
+
+# gbm with count training on BA <= threshold
+```{r}
+m_gbm_cnt <- gbm(log(BA+1) ~.-mean_monthly_BA-overthreshold, data = train, distribution = "gaussian", interaction.depth = 6, n.trees=1000, n.minobsinnode = 10, shrinkage = 0.1)
+
+p_gbm_cnt <- predict_ba_prob_gaussian_gbm1(m_gbm_cnt, test)
+```
+
+
+
+
+#vglm gpd model for BA > threshold
+```{r}
+library(VGAM)
+
+modelvglm <- vglm(BA~.-BA-CNT-overthreshold-mean_monthly_BA-mean_monthly_CNT, family = gpd(threshold = threshold), link = "log", data = train_data, subset = BA > threshold)
+
+modelvglm_cnt <-  vglm(BA~.-BA-overthreshold-mean_monthly_BA-mean_monthly_CNT, family = gpd(threshold = threshold), link = "log", data = train_data, subset = BA > threshold)
+
+
+
+```
+
+
+# computing scores
+
+#without cnt
+```{r}
+new_xgboost <- test %>% filter(xgboost_nocnt > 0.05) 
+rows_xgboost <- which(test$xgboost_nocnt > 0.05)
+
+predictedvglm <- predict(modelvglm, untransform = TRUE, newdata = new_xgboost) #predict with gpd the selected rows
+
+u_ba_threshold <- subset(u_ba, u_ba > threshold)
+
+x = matrix(0, nrow(new_xgboost), length(u_ba_threshold))
+for (i in 1:nrow(predictedvglm)){
+  for (j in 1:length(u_ba_threshold))
+    x[i,j] <- pgpd(u_ba_threshold[j], scale = predictedvglm[i,1] , shape = predictedvglm[i,2]) 
+    #prob that BA <  u_ba_threshold given that BA > threshold
+}
+
+prob_threshold = matrix(0, nrow(x), length(u_ba_threshold))
+for (i in 1:nrow(x)){
+  prob_threshold[i,] <- x[i,] * new_xgboost$xgboost_nocnt[i]
+}
+
+a <- p_gbm_nocnt
+a[rows_xgboost, 22:28] <- a[rows_xgboost, 21] +prob_threshold
+
+p1 <- a
+q <- a[rows_xgboost,28] -1
+a[rows_xgboost,] <- p1[rows_xgboost, ]- q
+
+for (i in 1:24521){
+  for(j in 1:28){
+    if (a[i,j] < 0) {
+      a[i,j] <- 0
+    }
+  }
+}
+
+
+score_nocnt_xgboost <- get_score_ba(a, test$BA, u_ba, weights_ba)
+score_nocnt_xgboost
+```
+
+
+#score with cnt
+```{r}
+new_xgboost <- test %>% filter(xgboost_cnt > 0.05 & CNT !=0) 
+rows_xgboost <- which(test$xgboost_cnt > 0.05 & test$CNT !=0)
+
+predictedvglm <- predict(modelvglm, untransform = TRUE, newdata = new_xgboost) #predict with gpd the selected rows
+
+u_ba_threshold <- subset(u_ba, u_ba > threshold)
+
+x = matrix(0, nrow(new_xgboost), length(u_ba_threshold))
+for (i in 1:nrow(predictedvglm)){
+  for (j in 1:length(u_ba_threshold))
+    x[i,j] <- pgpd(u_ba_threshold[j], scale = predictedvglm[i,1] , shape = predictedvglm[i,2]) 
+    #prob that BA <  u_ba_threshold given that BA > threshold
+}
+
+prob_threshold = matrix(0, nrow(x), length(u_ba_threshold))
+for (i in 1:nrow(x)){
+  prob_threshold[i,] <- x[i,] * new_xgboost$xgboost_cnt[i]
+}
+
+a <- p_gbm_cnt
+a[rows_xgboost, 22:28] <- a[rows_xgboost, 21] +prob_threshold
+
+p1 <- a
+q <- a[rows_xgboost,28] -1
+a[rows_xgboost,] <- p1[rows_xgboost, ]- q
+
+for (i in 1:24521){
+  for(j in 1:28){
+    if (a[i,j] < 0) {
+      a[i,j] <- 0
+    }
+  }
+}
+
+# for (i in 1:nrow(test)){
+#   if (test$CNT[i] == 0){
+#     for (j in 1:ncol(a))
+#       a[i,j] = 1
+#   }
+# }
+score_cnt_xgboost <- get_score_ba(a, test$BA, u_ba, weights_ba)
+score_cnt_xgboost
+```
+
+
+
+
+
+
+

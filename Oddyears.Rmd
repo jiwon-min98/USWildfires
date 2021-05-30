@@ -1,0 +1,291 @@
+---
+title: "Untitled"
+author: "Ji Won"
+date: "5/16/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyverse)
+library(maps)
+library(maptools)
+library(mgcv)
+library(extRemes)
+library(ROCR)
+library(gbm)
+library(VGAM)
+library(caret)
+library(naivebayes)
+library(POT)
+library(zoib)
+library(betareg)
+```
+
+```{r}
+load("~/Desktop/Project/data_train.RData")
+data_train_DF<- data_train_DF %>%
+  mutate(wind = sqrt(clim1^2 + clim2^2)) %>%
+  subset(select = -c(clim1, clim2) )
+
+
+data <- filter(data_train_DF, year %% 2 == 1)
+
+data_scaled <- as.data.frame(scale(data[,c(8:36)]))
+data_scaled <- cbind(data[,c(1:7)], data_scaled)
+
+smp_size <- floor(0.75 * nrow(data_scaled))
+
+set.seed(123)
+train_ind <- sample(seq_len(nrow(data_scaled)), size = smp_size)
+train <- data_scaled[train_ind, ]
+test <- data_scaled[-train_ind, ]
+
+train<- train%>%
+  group_by(lon, lat, month)%>%
+  mutate(mean_monthly_CNT= mean(CNT))
+
+for (m in 3:9){
+  for (L in seq(-124.75, -66.75, 0.5)){
+    for (l in seq(25.25, 49.25, 0.5)){
+      test$mean_monthly_CNT[test$lon==L & test$lat==l & test$month==m] <- 
+        train$mean_monthly_CNT[train$lon==L & train$lat==l & train$month==m][1]
+    }
+  }
+} 
+
+
+threshold <- 2000
+train$overthreshold <- ifelse(train$BA > threshold, 1, 0)
+test$overthreshold <- ifelse(test$BA > threshold, 1, 0)
+
+
+rm(L, l, m, data_train_DF, train_ind, data, smp_size)
+```
+
+
+
+```{r}
+predict_ba_prob_beta = function(model, test){
+  prediction = predict(model, test, type="response")
+  sd = sd(prediction)
+  ba_probabilities = matrix(0, nrow(test), length(u_ba))
+  for (i in 1:nrow(test)){
+    mu = prediction[i]
+    ba_probabilites[i, ] = pbeta(u_ba, shape1, shape2, ncp = 0, lower.tail = TRUE, log.p = FALSE)
+  }
+  ba_probabilities
+}
+```
+
+
+#Without extremes
+
+```{r}
+m_gbm1 <- gbm(log(BA+1) ~.-CNT-overthreshold, data = train, distribution = "gaussian", interaction.depth = 5, n.trees = 10000, n.minobsinnode = 10, shrinkage = 0.1)
+
+p_gbm1 <- predict_ba_prob_gaussian_gbm1(m_gbm1, test)
+s_gbm1 <- get_score_ba(p_gbm1, test$BA, u_ba, weights_ba)
+s_gbm1
+
+```
+
+## with CNT
+```{r}
+m_gbm2 <- gbm(log(BA+1) ~.-overthreshold, data = train, distribution = "gaussian", interaction.depth = 5, n.trees = 10000, n.minobsinnode = 10, shrinkage = 0.1)
+
+
+p_gbm2 <- predict_ba_prob_gaussian_gbm1(m_gbm2, test)
+s_gbm2 <- get_score_ba(p_gbm2, test$BA, u_ba, weights_ba)
+s_gbm2
+```
+
+
+
+
+# With extremes
+
+```{r}
+filter(test, overthreshold == 1)
+```
+
+```{r}
+modelvglm <- vglm(BA~.-CNT-overthreshold-mean_monthly_CNT, family = gpd(threshold = threshold), link = "log", data = train, subset = BA > threshold)
+
+modelvglm_cnt <-  vglm(BA~.-overthreshold-mean_monthly_CNT, family = gpd(threshold = threshold), link = "log", data = train, subset = BA > threshold)
+```
+
+```{r}
+below <- train %>% filter(BA <= threshold)
+```
+
+```{r}
+m_gbm_nocnt <- gbm(log(BA+1) ~ .-CNT-overthreshold, data = below, distribution = "gaussian", interaction.depth = 6, n.trees=1000, n.minobsinnode = 10, shrinkage = 0.1)
+
+p_gbm_nocnt <- predict_ba_prob_gaussian_gbm1(m_gbm_nocnt, test)
+```
+
+```{r}
+m_gbm_cnt <- gbm(log(BA+1) ~.-overthreshold, data = below, distribution = "gaussian", interaction.depth = 6, n.trees=1000, n.minobsinnode = 10, shrinkage = 0.1)
+
+p_gbm_cnt <- predict_ba_prob_gaussian_gbm1(m_gbm_cnt, test)
+```
+
+#naive bayes
+
+## without count
+
+```{r}
+train$overthresholdf <- as.factor(train$overthreshold)
+test$overthresholdf <- as.factor(test$overthreshold)
+naivebayes_nocnt <- naive_bayes(overthresholdf ~.-BA-CNT-overthreshold, data = train, usekernel = T) 
+p_naivebayes_nocnt <- predict(naivebayes_nocnt, test, 'prob')
+test$nocnt_naivebayes <- p_naivebayes_nocnt[,2]
+
+filter(test, nocnt_naivebayes > 0.05)
+filter(test, nocnt_naivebayes > 0.05 & BA > threshold)
+filter(test, BA > threshold)
+
+train$overthresholdf <- NULL 
+test$overthresholdf <- NULL
+
+# p <- predict(naivebayes_nocnt, test)
+# tab <- table(p2, test$overthreshold)
+# 1 - sum(diag(tab)) / sum(tab)
+```
+
+
+```{r}
+new <- test %>% filter(nocnt_naivebayes > 0.1) 
+rows<- which(test$nocnt_naivebayes > 0.1)
+
+predictedvglm <- predict(modelvglm, untransform = TRUE, newdata = new) #predict with gpd the selected rows
+
+u_ba_threshold <- subset(u_ba, u_ba > threshold)
+l<-length(u_ba_threshold)
+
+x = matrix(0, nrow(new), length(u_ba_threshold))
+for (i in 1:nrow(predictedvglm)){
+  for (j in 1:length(u_ba_threshold))
+    x[i,j] <- pgpd(u_ba_threshold[j], scale = predictedvglm[i,1] , shape = predictedvglm[i,2]) 
+    #prob that BA <  u_ba_threshold given that BA > threshold
+}
+
+prob_threshold = matrix(0, nrow(x), length(u_ba_threshold))
+for (i in 1:nrow(x)){
+  prob_threshold[i,] <- x[i,] * new$nocnt_naivebayes[i]
+}
+
+a <- p_gbm1
+a[rows, (29-l):28] <- a[rows, 28-l] +prob_threshold
+
+p1 <- a
+q <- a[rows,28] -1
+a[rows,] <- p1[rows, ]- q
+
+for (i in 1:nrow(test)){
+  for(j in 1:28){
+    if (a[i,j] < 0) {
+      a[i,j] <- 0
+    }
+  }
+}
+
+for (i in 1:nrow(a)){
+  for (j in 1:ncol(a)){
+    if (a[i,j]>1)
+      a[i,j]=1
+  }
+}
+
+score_nocnt_bayes <- get_score_ba(a, test$BA, u_ba, weights_ba)
+score_nocnt_bayes
+```
+
+# with cnt
+
+```{r}
+train$overthresholdf <- as.factor(train$overthreshold)
+test$overthresholdf <- as.factor(test$overthreshold)
+naivebayes_cnt <- naive_bayes(overthresholdf ~.-BA-overthreshold, data = train, usekernel = T) 
+p_naivebayes_cnt <- predict(naivebayes_cnt, test, 'prob')
+test$cnt_naivebayes <- p_naivebayes_cnt[,2]
+
+filter(test, cnt_naivebayes > 0.05)
+filter(test, cnt_naivebayes > 0.05 & BA > threshold)
+
+filter(test, BA> threshold)
+train$overthreshold <- NULL
+test$overthresholdf <- NULL
+```
+
+
+```{r}
+
+new <- test %>% filter(cnt_naivebayes > 0.1) 
+rows <- which(test$cnt_naivebayes > 0.1)
+
+predictedvglm <- predict(modelvglm, untransform = TRUE, newdata = new) #predict with gpd the selected rows
+
+u_ba_threshold <- subset(u_ba, u_ba > threshold)
+
+x = matrix(0, nrow(new), length(u_ba_threshold))
+for (i in 1:nrow(predictedvglm)){
+  for (j in 1:length(u_ba_threshold))
+    x[i,j] <- pgpd(u_ba_threshold[j], scale = predictedvglm[i,1] , shape = predictedvglm[i,2]) 
+    #prob that BA <  u_ba_threshold given that BA > threshold
+}
+
+prob_threshold = matrix(0, nrow(x), length(u_ba_threshold))
+for (i in 1:nrow(x)){
+  prob_threshold[i,] <- x[i,] * new$cnt_naivebayes[i]
+}
+
+a <- p_gbm2
+a[rows, (29-l):28] <- a[rows, 28-l] +prob_threshold
+
+p1 <- a
+q <- a[rows,28] -1
+a[rows,] <- p1[rows, ]- q
+
+for (i in 1:24521){
+  for(j in 1:28){
+    if (a[i,j] < 0) {
+      a[i,j] <- 0
+    }
+  }
+}
+
+for (i in 1:nrow(a)){
+  for (j in 1:ncol(a)){
+    if (a[i,j]>1)
+      a[i,j]=1
+  }
+}
+
+for (i in 1:nrow(test)){
+  if (test$CNT[i] == 0){
+    for (j in 1:ncol(a))
+      a[i,j] = 1
+  }
+}
+
+for (i in 1:nrow(test)){
+  if (test$CNT[i] != 0){
+      a[1,j] = 0
+  }
+}
+
+
+score_cnt_bayes <- get_score_ba(a, test$BA, u_ba, weights_ba)
+score_cnt_bayes
+
+
+save(m_gbm1, m_gbm2, score_cnt_bayes, score_nocnt_bayes, file = "/Users/jiwonmin/Desktop/Project/Oddyears.RData")
+
+```
+
+
+
+

@@ -1,0 +1,180 @@
+---
+title: "Poisson"
+author: "Ji Won"
+date: "4/3/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(pscl)
+library(dplyr)
+```
+
+## R Markdown
+
+
+```{r, echo = FALSE}
+load("~/Desktop/Project/data_train.RData")
+
+data_train_DF<- data_train_DF %>%
+  mutate(wind = sqrt(clim1^2 + clim2^2)) %>%
+  dplyr::rename(dew_temp = clim3,
+         temp = clim4,
+         pot_evap = clim5,
+         solar_rad = clim6,
+         thermal_rad = clim7,
+         pressure = clim8,
+         evap = clim9,
+         precip = clim10
+  )
+
+data_train_DF <- subset(data_train_DF, select = -c(clim1, clim2) )
+
+
+dat_scaled <- as.data.frame(scale(data_train_DF[,c(26:36)]))
+dat_scaled <- cbind(data_train_DF[,c(1:25)], dat_scaled)
+dat_scaled$fire <- ifelse(dat_scaled$CNT>0, 1, 0)
+
+#dat_scaled$date <- with(data_train_DF, sprintf("%d-%02d", year, month))
+train_data <- filter(dat_scaled, year == c(1995, 2005, 2015))
+odd_years <- filter(dat_scaled, year %%2 ==1)
+test <- filter(dat_scaled, year == c(1997,2007))
+```
+
+## Poisson regression GLM 
+
+
+```{r, echo=FALSE}
+CNTmodel.null = glm(CNT ~ 1, data= train_data, family = poisson)
+
+CNTmodel.full = glm(CNT ~., data= train_data, family = poisson)
+
+step(CNTmodel.null, scope = list(upper=CNTmodel.full), direction="both", test="Chisq",  data=train_data)
+
+```
+
+
+```{r}
+selected <- glm(formula = CNT ~ pot_evap + lc16 + solar_rad + lon + 
+    evap + pressure + area + wind + lc7 + lc10 + lc5 + lc8 + 
+    lc12 + thermal_rad + lc15 + lc4 + lc14 + lc17 + BA + altiSD + 
+    lc11 + temp + dew_temp + precip + lc9 + lc2 + lat + lc13, 
+    family = poisson, data = train_data)
+
+
+p_glm<- predict_cnt_prob_poisson(selected, test)
+
+score_glm <- get_score_cnt(p_glm, test$CNT, u_cnt, weights_cnt)
+```
+
+```{r}
+logistic <- glm(formula = fire ~ month + year + lat + lon +  thermal_rad + 
+    altiSD + solar_rad + pressure + altiMean + temp+ lc2 + lc5 + lc7 + lc8 + 
+    lc11 + lc15 + lc18, family = binomial, data = train_data)
+summary(logistic)
+
+```
+
+
+```{r}
+no_fire <- train_data %>% filter(fire == 1)
+no_fire_model <- gam(formula = CNT ~ month + year + lat + lon +  thermal_rad + 
+    altiSD + temp+ pressure + altiMean + lc2 + lc5 + lc7 + lc8 + 
+    lc11 + lc15 + lc18, family = poisson, data = no_fire)
+summary(no_fire_model)
+
+```
+
+```{r}
+no_fire_predict <- predict(logistic, newdata = test, type = "response") #predicting prb that BA > threshold
+head(no_fire_predict)
+
+test$no_fire_predict <- no_fire_predict
+
+table_mat <- table(test$fire, no_fire_predict > 0.50)
+table_mat
+
+filter(test, no_fire_predict > 0.50)
+
+
+
+```
+
+```{r}
+
+new <- test %>% filter(no_fire_predict > 0.50) #rows where prb exceed in threshold > 0.5
+rows <- which(test$no_fire_predict > 0.50)
+
+nrow(new) 
+
+predicted_count <- predict(no_fire_model, untransform = TRUE, newdata = new) #predict with gpd the selected rows
+
+
+u_cnt_1 <- subset(u_cnt, u_cnt > 0)
+
+
+  prediction = predict(no_fire_model, new, type="response")
+  no_fire_probabilities = matrix(0, length(prediction), length(u_cnt_1))
+  for (i in 1:length(prediction)){
+    no_fire_probabilities[i,] = ppois(u_cnt_1, lambda = prediction[i], log = FALSE)
+  }
+  no_fire_probabilities
+  
+  
+prob = matrix(0, nrow(no_fire_probabilities), length(u_cnt_1))
+for (i in 1:nrow(cnt_probabilities)){
+  prob[i,] <- cnt_probabilities[i,] * no_fire_predict[i]
+}
+prob
+
+p1<-prob
+for (i in 1:27){
+   p1[,i] <- prob[,i] + no_fire_predict[rows]
+}
+
+p<- cbind(1-no_fire_predict[rows], p1)
+p
+```
+
+
+```{r}
+p_new <- p_glm
+p_new[rows,] <- p
+p_new
+
+for (i in 1:24521){
+  for (j in 1:28){
+    if (p_new[i,j] > 1)
+      p_new[i,j] =1
+  }
+}
+
+
+score_logis_pois <- get_score_cnt(p_new, test$CNT, u_cnt, weights_cnt)
+```
+
+
+```{r}
+m <- bam(CNT ~ s(lat,lon, k = 50)+s(month, k=7) + s(temp) + s(pressure) + s(precip) + s(wind)+s(pot_evap)+s(solar_rad) + s(altiSD) + s(area) +s(lc1) + s(lc2) + lc3 + lc4 + s(lc5)+s(lc7)+ s(lc8)+ s(lc9)+ s(lc11, k = 20) + s(lc12, k = 20) + s(lc13), data = train_data, method = "REML", family = ziP)
+summary(m)
+gam.check(m)
+plot(m, shade = TRUE, rug = TRUE)
+
+```
+
+
+```{r}
+library(gbm)
+
+gbm1 <- gbm(CNT ~.-BA, data = train_data,distribution = "poisson", n.trees = 500, shrinkage = 0.1,             
+            interaction.depth = 3, bag.fraction = 0.5, train.fraction = 0.5,  
+            n.minobsinnode = 10, cv.folds = 5, keep.data = TRUE)  
+best.iter <- gbm.perf(gbm1, method = "cv")
+print(best.iter)
+
+p_gbm1<- predict_cnt_prob_poisson(gbm1, test)
+
+score_gbm1 <- get_score_cnt(p_gbm1, test$CNT, u_cnt, weights_cnt)
+```
+

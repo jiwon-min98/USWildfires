@@ -1,0 +1,413 @@
+---
+title: "Untitled"
+author: "Ji Won"
+date: "4/30/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyverse)
+library(maps)
+library(maptools)
+library(mgcv)
+library(extRemes)
+library(ROCR)
+
+```
+
+
+```{r, echo = FALSE }
+rm(list= ls())
+load("~/Desktop/Project/data_train.RData")
+data_train_DF<- data_train_DF %>%
+  mutate(wind = sqrt(clim1^2 + clim2^2)) %>%
+  dplyr::rename(dew_temp = clim3,
+         temp = clim4,
+         pot_evap = clim5,
+         solar_rad = clim6,
+         thermal_rad = clim7,
+         pressure = clim8,
+         evap = clim9,
+         precip = clim10) %>%
+  subset(select = -c(clim1, clim2) )
+
+dat_scaled <- as.data.frame(scale(data_train_DF[,c(26:36)]))
+dat_scaled <- cbind(data_train_DF[,c(1:25)], dat_scaled)
+
+dat_scaled$date <- with(data_train_DF, sprintf("%d-%02d", year, month))
+train_data <- filter(dat_scaled, year == c(1995, 2005, 2015, 2001, 1999))
+odd_years <- filter(dat_scaled, year %%2 ==1)
+test <- filter(dat_scaled, year == c(1997,2007, 2003, 2011))
+```
+
+
+```{r}
+threshold <- 2000
+```
+
+
+# LOGISTIC REGRESSION FOR (BA > THRESHOLD)
+
+## glm
+```{r}
+
+train_data$overthreshold <- ifelse(train_data$BA > threshold, 1, 0)
+test$overthreshold <- ifelse(test$BA > threshold, 1, 0)
+
+overthreshold_glm <- glm(formula = overthreshold ~ CNT + month + year + lat + thermal_rad + altiSD + solar_rad +  wind +altiMean + lc18 + lc1 + lc7 + lc8 +lc15 + lc5 + lc12, family = binomial, data = train_data)
+
+summary(overthreshold_glm)
+
+
+overthresholdpredict <- predict(overthreshold_glm, newdata = test, type = "response") #predicting prb that BA > threshold
+head(overthresholdpredict)
+
+test$overthresholdpredict <- overthresholdpredict
+
+
+table_mat <- table(test$overthreshold, overthresholdpredict > 0.10)
+table_mat
+
+filter(test, overthresholdpredict > 0.14)
+
+accuracy_Test <- sum(diag(table_mat)) / sum(table_mat)
+accuracy_Test
+
+
+rm(table_mat, accuracy_Test)
+
+
+```
+
+## gam
+
+```{r}
+overthreshold_bam <- bam(overthreshold ~ s(CNT) + te(lat,lon) + s(temp) + s(pressure) + s(precip) + s(pot_evap)+ s(solar_rad) + s(wind), data = train_data, method = "REML", family = binomial)
+
+summary(overthreshold_bam)
+
+overthresholdpredict1 <- predict(overthreshold_bam, newdata = test, type = "response") #predicting prb that BA > threshold
+head(overthresholdpredict1)
+
+test$overthresholdpredict1 <- overthresholdpredict1
+
+
+table_mat1 <- table(test$overthreshold, overthresholdpredict1 > 0.10)
+table_mat1
+
+filter(test, overthresholdpredict1 > 0.14)
+
+accuracy_Test1 <- sum(diag(table_mat1)) / sum(table_mat1)
+accuracy_Test1
+
+rm(table_mat, accuracy_Test)
+
+```
+
+## random forest
+
+```{r}
+```{r}
+library(rpart)
+library(rpart.plot)
+library(caTools)
+library(party)
+library(partykit)
+library(randomForest)
+
+
+r_forest <- randomForest(as.factor(overthreshold) ~ month + year + lon + lat + thermal_rad +
+    area + altiSD + temp + pressure + lc1 + lc2 + lc5 + lc6 +
+    lc7 + lc8 + lc9 + lc11 + lc12 + lc13 + lc15 + lc16 + lc18 , data = train_data, ntree=1000, importance=TRUE)
+r_forest
+rforestpredict <- predict(r_forest, test)
+
+importance(r_forest, type=1)
+varImpPlot(r_forest)
+
+rforestprob = predict(r_forest, test, type = "prob")
+
+test$rforestpredict <- rforestpredict
+test$rforestprob <- rforestprob
+test %>% filter(rforestpredict == 1)
+```
+
+
+# Predicting
+
+## GPD models for predicting extremes
+
+### vglm
+
+```{r}
+library(VGAM)
+
+modelvglm <- vglm(BA~lon+area+temp+solar_rad+pressure+dew_temp+altiMean+lc2+lc7+lc8+lc11+lc15+lc18, family = gpd(threshold = threshold), link = "log", data = train_data, subset = BA > threshold)
+
+summary(modelvglm)
+
+#selected
+modelvglm1 <- vglm(BA ~ solar_rad + lc2 + evap + lc15 + year, family = gpd(threshold = threshold), link = "log", data = train_data, subset = BA > threshold)
+
+summary(modelvglm1)
+
+
+```
+
+
+### vgam
+```{r}
+
+```
+
+
+## Predicting burnt area
+
+### GLM
+```{r}
+m_glm <- glm(log(BA+1)~lat+lon+thermal_rad+ altiMean+ altiSD+temp+ solar_rad+pressure+ lc1+lc2+lc3+lc5+lc6+lc7+lc8+lc11+lc12+lc13+lc15+lc16+lc18, family= "gaussian", data = train_data)
+```
+
+
+### BAM
+```{r}
+
+m_bam <- bam(log(BA+1) ~ te(lat,lon) + s(temp) +s(dew_temp) + s(pressure) + s(precip) + s(pot_evap)+s(solar_rad) + s(altiMean, k = 20) + s(area) +s(lc1) + s(lc2, k = 20) + s(lc5)+s(lc7)+  s(lc9)+ s(lc11, k = 20) + s(lc12, k = 20) + s(lc13) + s(lc14) + s(lc16)+ s(lc17)+s(lc18, k = 20), data = train_data, method = "REML", family = gaussian)
+```
+
+
+### GBM
+```{r}
+m_gbm <- gbm(log(BA+1) ~ .-CNT-date-overthreshold, data = train_data, distribution = "gaussian",interaction.depth = 1, n.minobsinnode = 2,shrinkage = 0.0001)
+```
+
+
+
+
+
+# Getting predictions
+
+## Using glm logistic & vglm GPD for over threshold & glm gaussian for BA
+
+```{r}
+new_glm <- test %>% filter(overthresholdpredict > 0.15) 
+rows_glm <- which(test$overthresholdpredict > 0.15)
+
+predictedvglm <- predict(modelvglm, untransform = TRUE, newdata = new_glm) #predict with gpd the selected rows
+
+u_ba_threshold <- subset(u_ba, u_ba > threshold)
+
+x = matrix(0, nrow(new_glm), length(u_ba_threshold))
+for (i in 1:nrow(predictedvglm)){
+  for (j in 1:length(u_ba_threshold))
+    x[i,j] <- pgpd(u_ba_threshold[j], scale = predictedvglm[i,1] , shape = predictedvglm[i,2]) 
+    #prob that BA <  u_ba_threshold given that BA > threshold
+}
+
+prob_threshold = matrix(0, nrow(x), length(u_ba_threshold))
+for (i in 1:nrow(x)){
+  prob_threshold[i,] <- x[i,] * new_glm$overthresholdpredict[i]
+}
+
+p_glm <- predict_ba_prob_gaussian_1(m_glm, test)
+
+s <- get_score_ba(p_glm, test$BA, u_ba, weights_ba)
+
+#0.052333 without extremes
+#4186.64
+
+
+p_glm[rows_glm, 22:28] <- p_glm[rows_glm, 21] +prob_threshold
+
+p1 <- p_glm
+q <- p_glm[rows_glm,28] -1
+p_glm[rows_glm,] <- p1[rows_glm, ]- q
+
+for (i in 1:24522){
+  for(j in 1:28){
+    if (p_glm[i,j] < 0) {
+      p_glm[i,j] <- 0
+    }
+  }
+}
+
+score_glm <- get_score_ba(p_glm, test$BA, u_ba, weights_ba)
+#0.05184 with extremes
+
+
+```
+
+
+
+## Using bam logistic & vglm GPD for over threshold & glm gaussian for BA
+
+```{r}
+new_bam <- test %>% filter(overthresholdpredict1 > 0.15) #rows where prb exceed in threshold > 0.5
+rows_bam <- which(test$overthresholdpredict1 > 0.15)
+
+predictedvglm <- predict(modelvglm, untransform = TRUE, newdata = new_bam) #predict with gpd the selected rows
+
+u_ba_threshold <- subset(u_ba, u_ba > threshold)
+
+x = matrix(0, nrow(new_bam), length(u_ba_threshold))
+for (i in 1:nrow(predictedvglm)){
+  for (j in 1:length(u_ba_threshold))
+    x[i,j] <- pgpd(u_ba_threshold[j], scale = predictedvglm[i,1] , shape = predictedvglm[i,2]) 
+    #prob that BA <  u_ba_threshold given that BA > threshold
+}
+
+prob_threshold = matrix(0, nrow(x), length(u_ba_threshold))
+for (i in 1:nrow(x)){
+  prob_threshold[i,] <- x[i,] * new_bam$overthresholdpredict1[i]
+}
+
+p_bam <- predict_ba_prob_gaussian_1(m_glm, test)
+
+p_bam[rows_bam, 22:28] <- p_bam[rows_bam, 21] +prob_threshold
+
+p1 <- p_bam
+q <- p_bam[rows_bam,28] -1
+p_bam[rows_bam,] <- p1[rows_bam, ]- q
+
+for (i in rows_bam){
+  for(j in 1:28){
+    if (p_bam[i,j] < 0) {
+      p_bam[i,j] <- 0
+    }
+  }
+}
+score_bam <- get_score_ba(p_bam, test$BA, u_ba, weights_ba)
+#0.05070 with extremes
+#4056
+```
+
+
+## Using random forest & vglm GPD for over threshold & glm gaussian for BA
+
+```{r}
+new_rforest <- test %>% filter(rforestpredict == 1) #rows where prb exceed in threshold > 0.5
+rows_rforest <- which(rforestpredict == 1)
+
+predictedvglm <- predict(modelvglm, untransform = TRUE, newdata = new_rforest) #predict with gpd the selected rows
+
+x = matrix(0, nrow(new_rforest), length(u_ba_threshold))
+for (i in 1:nrow(predictedvglm)){
+  for (j in 1:length(u_ba_threshold))
+    x[i,j] <- pgpd(u_ba_threshold[j], scale = predictedvglm[i,1] , shape = predictedvglm[i,2]) 
+    #prob that BA <  u_ba_threshold given that BA > threshold
+}
+
+prob_threshold = matrix(0, nrow(x), length(u_ba_threshold))
+for (i in 1:nrow(x)){
+  prob_threshold[i,] <- x[i,] * new_rforest$rforestprob[i]
+}
+
+p_rforest <- predict_ba_prob_gaussian_1(m_glm, test)
+
+
+p_rforest[rows_rforest, 22:28] <- p_rforest[rows_rforest, 21] + prob_threshold
+
+p1 <- p_rforest
+q <- p_bam[rows_bam,28] -1
+p_rforest[rows_rforest,] <- p1[rows_rforest, ]- q
+
+for (i in rows_rforest){
+  for(j in 1:28){
+    if (p_rforest[i,j] < 0) {
+      p_rforest[i,j] <- 0
+    }
+  }
+}
+score_rforest <- get_score_ba(p_rforest, test$BA, u_ba, weights_ba)
+#0.05285 with extremes
+```
+
+
+
+## Using bam logistic & vglm GPD for over threshold & bam gaussian for BA
+```{r}
+new_bam <- test %>% filter(overthresholdpredict1 > 0.15) #rows where prb exceed in threshold > 0.5
+rows_bam <- which(test$overthresholdpredict1 > 0.15)
+
+predictedvglm1 <- predict(modelvglm1, untransform = TRUE, newdata = new_bam) #predict with gpd the selected rows
+
+u_ba_threshold <- subset(u_ba, u_ba > threshold)
+
+x = matrix(0, nrow(new_bam), length(u_ba_threshold))
+for (i in 1:nrow(predictedvglm1)){
+  for (j in 1:length(u_ba_threshold))
+    x[i,j] <- pgpd(u_ba_threshold[j], scale = predictedvglm1[i,1] , shape = predictedvglm1[i,2]) 
+    #prob that BA <  u_ba_threshold given that BA > threshold
+}
+
+prob_threshold = matrix(0, nrow(x), length(u_ba_threshold))
+for (i in 1:nrow(x)){
+  prob_threshold[i,] <- x[i,] * new_bam$overthresholdpredict1[i]
+}
+
+p_bam1 <- predict_ba_prob_gaussian_1(m_bam, test)
+s1 <- get_score_ba(p_bam1, test$BA, u_ba, weights_ba)
+
+p_bam1[rows_bam, 22:28] <- p_bam1[rows_bam, 21] +prob_threshold
+
+p1 <- p_bam1
+q <- p_bam1[rows_bam,28] -1
+p_bam1[rows_bam,] <- p1[rows_bam, ]- q
+
+for (i in rows_bam){
+  for(j in 1:28){
+    if (p_bam1[i,j] < 0) {
+      p_bam1[i,j] <- 0
+    }
+  }
+}
+score_bam1 <- get_score_ba(p_bam1, test$BA, u_ba, weights_ba)
+#0.0503127 with extremes
+
+```
+
+
+## Using bam logistic & vglm GPD for over threshold & gbm gaussian for BA
+```{r}
+new_bam <- test %>% filter(overthresholdpredict1 > 0.15) #rows where prb exceed in threshold > 0.5
+rows_bam <- which(test$overthresholdpredict1 > 0.15)
+
+predictedvglm <- predict(modelvglm, untransform = TRUE, newdata = new_bam) #predict with gpd the selected rows
+
+u_ba_threshold <- subset(u_ba, u_ba > threshold)
+
+x = matrix(0, nrow(new_bam), length(u_ba_threshold))
+for (i in 1:nrow(predictedvglm)){
+  for (j in 1:length(u_ba_threshold))
+    x[i,j] <- pgpd(u_ba_threshold[j], scale = predictedvglm[i,1] , shape = predictedvglm[i,2]) 
+    #prob that BA <  u_ba_threshold given that BA > threshold
+}
+
+prob_threshold = matrix(0, nrow(x), length(u_ba_threshold))
+for (i in 1:nrow(x)){
+  prob_threshold[i,] <- x[i,] * new_bam$overthresholdpredict1[i]
+}
+
+p_bam2 <- predict_ba_prob_gaussian_2(m_gbm, test, "response" )
+s2 <- get_score_ba(p_bam2, test$BA, u_ba, weights_ba)
+
+p_bam2[rows_bam, 22:28] <- p_bam2[rows_bam, 21] +prob_threshold
+
+p1 <- p_bam2
+q <- p_bam2[rows_bam,28] -1
+p_bam2[rows_bam,] <- p1[rows_bam, ]- q
+
+for (i in rows_bam){
+  for(j in 1:28){
+    if (p_bam2[i,j] < 0) {
+      p_bam2[i,j] <- 0
+    }
+  }
+}
+score_bam2 <- get_score_ba(p_bam2, test$BA, u_ba, weights_ba)
+#0.0503171 with extremes
+#4056
+```

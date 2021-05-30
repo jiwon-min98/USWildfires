@@ -1,0 +1,180 @@
+---
+title: "Untitled"
+author: "Ji Won"
+date: "4/15/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+library(dplyr)       # basic data manipulation and plotting
+library(ggplot2)     # data visualization
+library(h2o)  
+```
+
+
+```{r, echo=FALSE}
+load("~/Desktop/Project/data_train.RData")
+data_train_DF<- data_train_DF %>%
+  mutate(wind = sqrt(clim1^2 + clim2^2)) %>%
+  dplyr::rename(dew_temp = clim3,
+         temp = clim4,
+         pot_evap = clim5,
+         solar_rad = clim6,
+         thermal_rad = clim7,
+         pressure = clim8,
+         evap = clim9,
+         precip = clim10
+  ) %>%
+  subset(select = -c(clim1, clim2) )
+
+
+
+data_train_DF$fire <- ifelse(data_train_DF$CNT>0, 1, 0)
+odd_years <- filter(data_train_DF, year %% 2 == 1)
+
+train_data <- data_train_DF %>% filter(year == c(1995, 2005, 2015))
+
+```
+
+
+```{r}
+
+h2o.no_progress()  # turn off progress bars for brevity
+h2o.init()  # connect to H2O instance
+
+
+# convert data to h2o object
+data_train_DF.h2o <- as.h2o(data_train_DF)
+
+# run PCA
+my_pca <- h2o.prcomp(
+  training_frame = data_train_DF.h2o,
+  pca_method = "GramSVD",
+  k = ncol(data_train_DF.h2o), 
+  transform = "STANDARDIZE", 
+  impute_missing = TRUE,
+  max_runtime_secs = 1000
+)
+```
+
+```{r}
+my_pca
+```
+
+```{r}
+my_pca@model$eigenvectors %>% 
+  as.data.frame() %>% 
+  mutate(feature = row.names(.)) %>%
+  ggplot(aes(pc1, reorder(feature, pc1))) +
+  geom_point()
+
+```
+
+
+
+```{r}
+# Compute eigenvalues
+eigen <- my_pca@model$importance["Standard deviation", ] %>%
+  as.vector() %>%
+  .^2
+  
+# Find PCs where the sum of eigenvalues is greater than or equal to 1
+which(eigen >= 1)
+```
+
+```{r}
+
+my_pca@model$eigenvectors %>% 
+  as.data.frame() %>% 
+  mutate(feature = row.names(.)) %>%
+  ggplot(aes(pc1, pc2, label = feature)) +
+  geom_text()
+
+```
+The proportion of variance explained (PVE) identifies the optimal number of PCs to keep based on the total variability that we would like to account for.
+
+```{r}
+# Extract and plot PVE and CVE
+data.frame(
+  PC  = my_pca@model$importance %>% seq_along(),
+  PVE = my_pca@model$importance %>% .[2,] %>% unlist(),
+  CVE = my_pca@model$importance %>% .[3,] %>% unlist()
+) %>%
+  tidyr::gather(metric, variance_explained, -PC) %>%
+  ggplot() +
+  geom_point(aes(PC, variance_explained)) +
+  geom_abline(slope = 0, intercept = 0.80)+
+  facet_wrap(~ metric, ncol = 1, scales = "free")
+
+
+#15 pcas explain 80% of total variability
+  
+```
+
+
+The scree plot criterion looks for the “elbow” in the curve and selects all components just before the line flattens out
+
+
+```{r}
+data.frame(
+  PC  = my_pca@model$importance %>% seq_along,
+  PVE = my_pca@model$importance %>% .[2,] %>% unlist()
+) %>%
+  ggplot(aes(PC, PVE, group = 1, label = PC)) +
+  geom_point() +
+  geom_line() +
+  geom_text(nudge_y = -.002)
+
+# 7 or 8??
+
+```
+
+
+
+
+
+# Decision trees 
+
+```{r}
+# # ensure the results are repeatable
+# set.seed(7)
+# # load the library
+# library(mlbench)
+# library(caret)
+# library(RRF)
+# 
+# control <- trainControl(method="repeatedcv", number=10, repeats=3)
+# model <- train(CNT~., data=train_data, method="RRF", preProcess="scale", trControl=control)
+# # estimate variable importance
+# importance <- varImp(model, scale=FALSE)
+# # summarize importance
+# print(importance)
+# # plot importance
+# plot(importance)
+
+```
+
+
+```{r}
+# define the control using a random forest selection function
+control <- rfeControl(functions=rfFuncs, method="cv", number=10)
+# run the RFE algorithm
+results <- rfe(train_data[,3:36], train_data[,1], sizes=c(1:33), rfeControl=control)
+# summarize the results
+print(results)
+# list the chosen features
+predictors(results)
+# plot the results
+plot(results, type=c("g", "o"))
+
+```
+
+```{r}
+library(corrplot)
+pearson_corr <- round(cor(data_train_DF, use="complete.obs"),2)
+spearman_corr <- round(cor(data_train_DF, use="complete.obs", method = "spearman"))
+corrplot.mixed(pearson_corr, lower.col = "black", number.cex = .3, tl.col = "black", tl.cex = 0.6)
+corrplot.mixed(spearman_corr, lower.col = "black", number.cex = .7, tl.col = "black",  tl.cex = 0.6, order = "original")
+```

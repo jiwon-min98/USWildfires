@@ -1,0 +1,147 @@
+---
+title: "Untitled"
+author: "Ji Won"
+date: "4/16/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(mgcv)
+library(dplyr)
+library(tidyverse)
+library(caret)
+```
+
+
+```{r, echo=FALSE}
+rm(list = ls())
+load("~/Desktop/Project/data_train.RData")
+data_train_DF<- data_train_DF %>%
+  mutate(wind = sqrt(clim1^2 + clim2^2)) %>%
+  subset(select = -c(clim1, clim2) )
+
+
+dat_scaled <- as.data.frame(scale(data_train_DF[,c(26:36)]))
+dat_scaled <- cbind(data_train_DF[,c(1:25)], dat_scaled)
+
+odd_years <- filter(dat_scaled, year %% 2 == 1)
+#dat_scaled$fire <- ifelse(dat_scaled$CNT>0, 1, 0)
+
+train_data <- dat_scaled %>% filter(year == c(1995, 2005, 2015))
+predict_data <- dat_scaled %>% filter(year == c(1997, 2007))
+```
+
+```{r}
+benchmarkmodel<- glm(CNT~., data = train_data, family=poisson)
+predictbenchmark <- predict_cnt_prob_poisson(benchmarkmodel, predict_data)
+
+
+get_score_cnt(predictbenchmark, predict_data$CNT, u_cnt, weights_cnt)
+```
+
+
+
+
+```{r }
+library(car)
+m <- bam(CNT ~ s(lat,lon, k = 50)+s(month, k=7) + s(wind)+s(clim3) + s(clim4) + s(clim5) + s(clim6)+s(clim7)+s(clim8) +s(clim9)+s(clim10)+s(altiMean)+ s(altiSD) + s(area) +s(lc1) + s(lc2) + s(lc3) + s(lc4) + s(lc5)+s(lc7)+ s(lc8)+ s(lc9)+s(lc10)+ s(lc11, k = 20) + s(lc12, k = 20) + s(lc13) + s(lc14) + s(lc15) + s(lc16, k = 6)+ s(lc17)+s(lc18), data = train_data, family = poisson)
+summary(m)
+gam.check(m)
+# plot(m, shade = TRUE, rug = TRUE)
+```
+
+```{r}
+m1 <- bam(CNT ~ te(lat,lon)+s(month, k=7) +s(wind)+s(clim3) + s(clim4) + s(clim5) + s(clim6)+s(clim7)+s(clim8) +s(clim9)+s(clim10)+ s(altiSD) +  s(area) +s(lc1) + s(lc3) + s(lc4) + s(lc5)+s(lc7)+s(lc9)+ s(lc11, k = 20) + s(lc12, k = 20) + s(lc13) + s(lc14) + s(lc15) + s(lc16, k = 20)+ s(lc17)+s(lc18, k = 20), data = train_data, family=  poisson)
+summary(m1)
+gam.check(m1)
+
+```
+
+
+```{r}
+p<- predict_cnt_prob_poisson(m1, predict_data)
+get_score_cnt(p, predict_data$CNT, u_cnt, weights_cnt)
+```
+
+
+
+
+```{r}
+m3 <- bam(CNT ~ te(lat,lon)+s(month, k=7) +s(wind)+s(clim3) + s(clim4) + s(clim5) + s(clim6)+s(clim7)+s(clim8) +s(clim9)+s(clim10)+ s(altiSD) +  s(area) +s(lc1) + s(lc4) + s(lc5)+s(lc7)+s(lc9)+ s(lc11, k = 20) + s(lc12, k = 20) + s(lc13) + s(lc14) + s(lc15) + s(lc16, k = 20)+ s(lc17)+s(lc18, k = 20), data = train_data, family=  poisson)
+summary(m3)
+gam.check(m3)
+
+```
+
+```{r}
+plot(m3, shade = TRUE, rug = TRUE, residuals=TRUE)
+vif(m3)
+```
+
+```{r}
+m4 <- bam(CNT ~ te(lat,lon)+s(month, k=7) +s(wind)+s(clim3) + s(clim4) + s(clim5) + s(clim6)+s(clim7)+s(clim8) +s(clim10)+ s(altiSD, k = 30) +s(area)+lc1+lc2+lc3+lc18+lc17, data = train_data, family=  poisson)
+summary(m4)
+gam.check(m4)
+```
+
+```{r}
+concurvity(m4)
+p2<- predict_cnt_prob_poisson(m4, predict_data)
+get_score_cnt(p2, predict_data$CNT, u_cnt, weights_cnt)
+```
+
+
+```{r}
+m5 <- bam(CNT ~ te(lat,lon)+s(month, k=7) +s(wind)+ s(clim5) + s(clim6)+s(clim7)+s(clim8) +s(clim10)+ s(altiSD, k = 90) +s(area)+lc1+lc2+lc3+lc18+lc17, data = train_data, family=  poisson)
+summary(m5)
+gam.check(m5)
+```
+
+```{r}
+concurvity(m5)
+```
+
+```{r}
+p3<- predict_cnt_prob_poisson(m5, predict_data)
+get_score_cnt(p3, predict_data$CNT, u_cnt, weights_cnt)
+```
+
+```{r}
+m6 <- bam(CNT ~ te(lat,lon)+s(month, k=7) +s(wind)+ s(clim5)+ s(clim7)+s(clim8) +s(clim10)+ s(altiSD, k = 150) +s(area)+lc1+lc2+lc3+lc17, data = train_data, family=  poisson)
+summary(m6)
+gam.check(m6)
+concurvity(m6)
+```
+
+
+```{r}
+p4<- predict_cnt_prob_poisson(m6, predict_data)
+get_score_cnt(p4, predict_data$CNT, u_cnt, weights_cnt)
+```
+
+```{r}
+m7<- bam(CNT ~ te(lat,lon)+s(month, k=7) +s(wind)+ s(clim5)+ s(clim7)+s(clim10)+ s(altiSD, k = 150) +s(area)+lc1+lc2+lc3+lc17, data = train_data, family=  poisson)
+summary(m7)
+gam.check(m7)
+concurvity(m7)
+```
+
+
+```{r}
+p7<- predict_cnt_prob_poisson(m7, predict_data)
+get_score_cnt(p7, predict_data$CNT, u_cnt, weights_cnt)
+
+```
+
+```{r}
+m8 <- glm(CNT~lon+lat+area+month+lc2+lc3+lc4+lc6+lc7+lc8+lc10+lc11+lc12+lc13+lc17+altiSD+clim3+clim5+clim6+clim7+wind, data = train_data, family=poisson)
+p8 <- predict_cnt_prob_poisson(m8, predict_data)
+
+get_score_cnt(p8, predict_data$CNT, u_cnt, weights_cnt)
+```
+
+
+
+
+

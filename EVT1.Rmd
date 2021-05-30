@@ -1,0 +1,590 @@
+---
+title: "EVT1"
+author: "Ji Won"
+date: "4/9/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyverse)
+library(maps)
+library(maptools)
+library(mgcv)
+library(extRemes)
+```
+
+
+```{r, echo = FALSE }
+rm(list= ls())
+load("~/Desktop/Project/data_train.RData")
+data_train_DF<- data_train_DF %>%
+  mutate(wind = sqrt(clim1^2 + clim2^2)) %>%
+  dplyr::rename(dew_temp = clim3,
+         temp = clim4,
+         pot_evap = clim5,
+         solar_rad = clim6,
+         thermal_rad = clim7,
+         pressure = clim8,
+         evap = clim9,
+         precip = clim10) %>%
+  subset(select = -c(clim1, clim2) )
+
+dat_scaled <- as.data.frame(scale(data_train_DF[,c(26:36)]))
+dat_scaled <- cbind(data_train_DF[,c(1:25)], dat_scaled)
+
+dat_scaled$date <- with(data_train_DF, sprintf("%d-%02d", year, month))
+train_data <- filter(dat_scaled, year == c(1995, 2005, 2015, 2001, 1999))
+odd_years <- filter(dat_scaled, year %%2 ==1)
+test <- filter(dat_scaled, year == c(1997,2007, 2003, 2011))
+```
+
+
+# Plotting GPD (with no covariates)
+
+## March
+```{r}
+march <- filter(odd_years, month == 3)
+mrlplot(march$BA, main="Mean Residual Life Plot")
+thres= 5000 #quantile(nozero$BA,  0.95) 
+ggplot(data = march) +
+  geom_point(aes(date,BA)) +
+  geom_abline(slope = 0, intercept = thres, colour = "red")+
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=1))
+march_gpd <- fevd(march$BA, type="GP", threshold = thres) 
+
+summary(march_gpd)
+
+plot(march_gpd, type = "probprob")
+plot(march_gpd, type = "qq")
+plot(march_gpd, type = "density")
+rug(march$BA)
+rm(march)
+```
+
+## April
+```{r}
+april <- filter(odd_years, month == 4)
+mrlplot(april$BA, main="Mean Residual Life Plot")
+thres= 10000 #quantile(nozero$BA,  0.95) 
+ggplot(data = april) +
+  geom_point(aes(date,BA)) +
+  geom_abline(slope = 0, intercept = thres, colour = "red")+
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=1))
+april_gpd <- fevd(april$BA, type="GP", threshold = thres) 
+
+summary(april_gpd)
+
+plot(april_gpd, type = "probprob")
+plot(april_gpd, type = "qq")
+plot(april_gpd, type = "density")
+rug(april$BA)
+rm(april)
+```
+##  May
+```{r}
+may <- filter(odd_years, month == 5)
+mrlplot(may$BA, main="Mean Residual Life Plot")
+thres= 10000 #quantile(nozero$BA,  0.95) 
+ggplot(data = may) +
+  geom_point(aes(date,BA)) +
+  geom_abline(slope = 0, intercept = thres, colour = "red")+
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=1))
+may_gpd <- fevd(may$BA, type="GP", threshold = thres) 
+
+summary(may_gpd)
+
+plot(may_gpd, type = "probprob")
+plot(may_gpd, type = "qq")
+plot(may_gpd, type = "density")
+rug(may$BA)
+rm(may)
+```
+
+
+## years 1995, 2005, 2015
+```{r}
+nozero <- filter(train_data, BA >0)
+mrlplot(train_data$BA, main="Mean Residual Life Plot")
+thres= 10000 #quantile(nozero$BA,  0.95) 
+ggplot(data = train_data) +
+  geom_point(aes(date,BA)) +
+  geom_abline(slope = 0, intercept = thres, colour = "red")+
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=1))
+model_gpd <- fevd(train_data$BA, type="GP", threshold = thres) 
+
+
+summary(model_gpd)
+
+plot(model_gpd, type = "probprob")
+plot(model_gpd, type = "qq")
+plot(model_gpd, type = "density")
+rug(train_data$BA)
+
+```
+
+## PP
+
+Fitting the GP df to excesses over a high threshold and also estimating the frequency of exceeding the threshold by fitting a Poisson distribution is sometimes referred to as the orthogonal approach to estimating the PP
+
+```{r}
+thres= 5000 #quantile(nozero$BA,  0.95) 
+
+model_PP <- fevd(train_data$BA, type="PP", threshold = thres) 
+
+
+summary(model_PP)
+
+plot(model_PP, type = "probprob")
+plot(model_PP, type = "qq")
+plot(model_PP, type = "density")
+rug(train_data$BA)
+
+```
+
+
+
+#Prb that the BA goes over threshold 
+## glm/gam
+```{r } 
+library(gbm)
+threshold <- 2000
+
+train_data$overthreshold <- ifelse(train_data$BA > threshold, 1, 0)
+test$overthreshold <- ifelse(test$BA > threshold, 1, 0)
+
+overthresholdmodel <- glm(formula = overthreshold ~ CNT + month + year + lat + thermal_rad + altiSD + solar_rad + pressure + wind +altiMean + lc18 + lc1 + lc7 + lc8 +lc15 + lc5 + lc12, family = binomial, data = train_data)
+
+summary(overthresholdmodel)
+
+overthresholdmodel <- bam(overthreshold ~ CNT + te(lat,lon) + s(temp) + s(pressure) + s(precip) + s(pot_evap)+ s(solar_rad) + s(wind), data = train_data, method = "REML", family = binomial)
+
+#overthresholdpredict <- predict(overthresholdmodel, newdata = test, type = "response") #predicting prb that BA > threshold
+head(overthresholdpredict)
+
+test$overthresholdpredict <- overthresholdpredict
+
+
+table_mat <- table(test$overthreshold, overthresholdpredict > 0.10)
+table_mat
+
+filter(test, overthresholdpredict > 0.14)
+
+accuracy_Test <- sum(diag(table_mat)) / sum(table_mat)
+accuracy_Test
+
+# library(ROCR)
+# ROCRpred <- prediction(overthresholdpredict, test$overthreshold)
+# ROCRperf <- performance(ROCRpred, 'tpr', 'fpr')
+# plot(ROCRperf, colorize = TRUE, text.adj = c(-0.2, 1.7))
+
+rm(table_mat, accuracy_Test)
+
+
+```
+
+```{r}
+library(rpart)
+library(rpart.plot)
+library(caTools)
+library(party)
+library(partykit)
+library(randomForest)
+
+# rtree <- rpart(as.factor(overthreshold) ~ month + year + lat + thermal_rad +
+#     area + altiSD + temp + pressure + lc1 + lc2 + lc5 + lc6 +
+#     lc7 + lc8 + lc9 + lc11 + lc12 + lc13 + lc15 + lc16 + lc18, train_data)
+# rpart.plot(rtree)
+# pe<- predict(rtree, test)
+# pe
+
+r_forest <- randomForest(as.factor(overthreshold) ~ month + year + lon + lat + thermal_rad +
+    area + altiSD + temp + pressure + lc1 + lc2 + lc5 + lc6 +
+    lc7 + lc8 + lc9 + lc11 + lc12 + lc13 + lc15 + lc16 + lc18 , data = train_data, ntree=1000, importance=TRUE)
+r_forest
+rforestpredict <- predict(r_forest, test)
+
+importance(r_forest, type=1)
+varImpPlot(r_forest)
+
+sum(abs(test$overthreshold - as.numeric(rforestpredict)+1))
+rforestprob = predict(r_forest, test, type = "prob")
+
+test$rforestpredict <- rforestpredict
+test$rforestprob <- rforestprob
+test %>% filter(rforestpredict == 1)
+rm(filtered)
+
+# ctree_ <- ctree(overthreshold ~ month + year + lat + thermal_rad +
+#     area + altiSD + temp + pressure + lc1 + lc2 + lc5 + lc6 +
+#     lc7 + lc8 + lc9 + lc11 + lc12 + lc13 + lc15 + lc16 + lc18, train_data)
+# plot(ctree_)
+```
+
+
+# With Covariates -- fitting GPD with parameters
+
+Training set : years 1995, 2005, 2015, 2001
+
+## Using VGAM library
+
+VGAM : vector generalized additive model
+- is able to accommodate linear or nonlinear effects by involving more than one additive predictors
+- allows the GEV and GPD distributions to be fitted with parameters of GAM form 
+- can be used to develop models with multiple responses
+
+VGAM with GPD will have two predictors according to the number of parameters in the GPD
+
+
+### vglm
+
+Full model:
+
+```{r}
+library(VGAM)
+
+
+mod_vglm1<- vglm(BA ~1, family = gpd(threshold = threshold), data = train_data, subset = BA > threshold)
+length(depvar(mod_vglm1)) # effective sample size
+summary(mod_vglm1)
+AIC(mod_vglm1)
+
+mod_vglm_full <- vglm(BA~lon+lat+month+area+year+altiMean+altiSD+temp+pot_evap+solar_rad+evap+precip+ wind+pressure+lc1+lc2+lc3+lc4+lc5+lc6+lc7+lc8+lc9+lc10+lc11+lc12+lc13+lc14+lc15+lc16+lc17+lc18, family = gpd(threshold = threshold), link = "log", data = train_data, subset = BA > threshold)
+summary(mod_vglm_full)
+AIC(mod_vglm_full)
+
+```
+Trying model selection :
+
+```{r}
+modelvglm1 <- step4vglm(mod_vglm1, scope = mod_vglm_full, direction = "both")
+
+modelvglm <- vglm(BA ~ solar_rad + lc2 + evap + lc15 + year)
+
+
+modelvglm <- vglm(BA~lon+area+temp+solar_rad+pressure+dew_temp+altiMean+lc2+lc7+lc8+lc11+lc15+lc18, family = gpd(threshold = threshold), link = "log", data = train_data, subset = BA > threshold)
+
+# modelvgam <- vgam(BA ~ s(year) + s(month)+s(temp) ,family = gpd(threshold = threshold), link = "log", data = train_data, subset = BA > threshold)
+
+summary(modelvglm)
+
+rm(mod_vglm1, mod_vglm_full)
+
+```
+
+
+
+```{r}
+
+n <- nobs(modelvglm) # no. of observations
+n #196
+
+y<-depvar(modelvglm) #function that extracts the response/dependent variable (BA) -- the model took BA > threshold
+ #(all the burnt area over 5000)
+
+#train_data$predicted <- y
+#plot(y)
+new <- test %>% filter(overthresholdpredict > 0.15) #rows where prb exceed in threshold > 0.5
+rows <- which(test$overthresholdpredict > 0.15)
+
+nrow(new) 
+
+predictedvglm <- predict(modelvglm, untransform = TRUE, newdata = new) #predict with gpd the selected rows
+
+head(predictedvglm) #scale and shape parameters
+nrow(predictedvglm) #6 predictions
+
+u_ba_threshold <- subset(u_ba, u_ba > threshold)
+
+x = matrix(0, nrow(new), length(u_ba_threshold))
+for (i in 1:nrow(predictedvglm)){
+  for (j in 1:length(u_ba_threshold))
+    x[i,j] <- pgpd(u_ba_threshold[j], scale = predictedvglm[i,1] , shape = predictedvglm[i,2]) 
+    #prob that BA <  u_ba_threshold given that BA > threshold
+}
+
+u_ba_threshold
+x
+new
+
+prob_threshold = matrix(0, nrow(x), length(u_ba_threshold))
+for (i in 1:nrow(x)){
+  prob_threshold[i,] <- x[i,] * new$overthresholdpredict[i]
+}
+#prob_threshold <- new$overthresholdpredict*x #prob(threshold < BA <= u_ba_theshold)
+prob_threshold
+
+#prob (BA <= u_ba_threshold ) = pr (BA <= threshold) + prob(threshold < BA <= u_ba_theshold)
+
+
+
+```
+
+
+
+
+```{r}
+#m <- glm(log(BA+1)~lat+lon+thermal_rad+ altiMean+ altiSD+temp+ solar_rad+pressure+ lc1+lc2+lc3+lc5+lc6+lc7+lc8+lc11+lc12+lc13+lc15+lc16+lc18, family= "gaussian", data = train_data)
+m <- bam(log(BA+1) ~ te(lat,lon) + s(temp) +s(dew_temp) + s(pressure) + s(precip) + s(pot_evap)+s(solar_rad) + s(altiMean, k = 20) + s(area) +s(lc1) + s(lc2, k = 20) + s(lc5)+s(lc7)+  s(lc9)+ s(lc11, k = 20) + s(lc12, k = 20) + s(lc13) + s(lc14) + s(lc16)+ s(lc17)+s(lc18, k = 20), data = train_data, method = "REML", family = gaussian)
+# m<-gbm(log(BA+1)~lat+lon+thermal_rad+ altiMean+ altiSD+temp+solar_rad+pressure+lc1+lc2+lc3+lc5+lc6+lc7+lc8+lc11+lc12+lc13+lc15+lc16+lc18,distribution = "gaussian",
+#                  interaction.depth = 1,n.trees = 500,cv.folds = 5,
+#                  n.minobsinnode = 10,
+#                  shrinkage = 0.0001, data = train_data)
+
+p <- predict_ba_prob_gaussian_1(m, test)
+
+
+
+p[rows, 22:28] <- prob_threshold + p[rows, 21]
+p[rows,]
+
+p1 <- p
+
+
+q <- p[rows,28] -1
+
+p[rows,] <- p1[rows, ]- q
+
+p[rows,]
+
+for (i in 1:24522){
+  for(j in 1:28){
+    if (p[i,j] < 0) {
+      p[i,j] <- 0
+    }
+  }
+}
+
+p[rows,]
+
+
+score <- get_score_ba(p, test$BA, u_ba, weights_ba)
+#0.0514218654671
+```
+
+
+
+```{r}
+# overthreshold_data <- filter(test, overthreshold ==1)
+# 
+# pvglm <- predict(modelvglm, untransform = TRUE, newdata = overthreshold_data)
+# 
+# y = matrix(0, nrow(overthreshold_data), length(u_ba_threshold))
+# for (i in 1:nrow(predictedvglm)){
+#   for (j in 1:length(u_ba_threshold))
+#     y[i,j] <- pgpd(u_ba_threshold[j], scale = pvglm[i,1] , shape = pvglm[i,2]) 
+#     #prob that BA <  u_ba_threshold given that BA > threshold
+# }
+# 
+# y
+# 
+# prob_th = matrix(0, nrow(y), length(u_ba_threshold))
+# for (i in 1:nrow(x)){
+#   prob_threshold[i,] <- y[i,] * new$overthresholdpredict[i]
+# }
+# #prob_threshold <- new$overthresholdpredict*x #prob(threshold < BA <= u_ba_theshold)
+# prob_threshold
+
+```
+
+
+
+##random forest
+```{r}
+new2 <- test %>% filter(rforestpredict == 1) #rows where prb exceed in threshold > 0.5
+rows <- which(rforestpredict == 1)
+
+nrow(new2) 
+
+predictedvglm1 <- predict(modelvglm, untransform = TRUE, newdata = new2) #predict with gpd the selected rows
+
+head(predictedvglm1) #scale and shape parameters
+nrow(predictedvglm1) #6 predictions
+
+u_ba_threshold <- subset(u_ba, u_ba > threshold)
+
+x1 = matrix(0, nrow(new2), length(u_ba_threshold))
+for (i in 1:nrow(predictedvglm1)){
+  for (j in 1:length(u_ba_threshold))
+    x1[i,j] <- pgpd(u_ba_threshold[j], scale = predictedvglm1[i,1] , shape = predictedvglm1[i,2]) 
+    #prob that BA <  u_ba_threshold given that BA > threshold
+}
+
+
+x1
+new2
+
+
+prob_threshold1 = matrix(0, nrow(x1), length(u_ba_threshold))
+for (i in 1:nrow(x)){
+  prob_threshold1[i,] <- x1[i,] * new2$rforestprob[i]
+}
+#prob_threshold <- new$overthresholdpredict*x #prob(threshold < BA <= u_ba_theshold)
+prob_threshold1
+
+#prob (BA <= u_ba_threshold ) = pr (BA <= threshold) + prob(threshold < BA <= u_ba_theshold)
+
+p <- predict_ba_prob_gaussian_1(m, test)
+
+p[rows,22:28]<- p[rows,21]+prob_threshold1
+
+p[rows,]
+
+```
+
+
+
+
+
+
+
+# Using evgam
+- primarily designed to allow nonstationarity in EVD parameters by assuming GAM forms in covariate x.
+ 
+```{r}
+
+library(evgam)
+
+threshold <- 8000
+# train_data$excess <- train_data$BA - threshold
+# train_data$excess[train_data$excess <= 0] <- NA
+threshold_data <- filter(train_data, BA >= threshold)
+
+fit_evgam <- evgam(data = threshold_data, BA ~ s(lon,lat)+s(month, k =7)+s(altiMean)+s(altiSD)+s(temp)+ +s(solar_rad)+s(evap)+s(precip)+s(wind), family = "gpd")
+
+AIC(fit_evgam)
+# plot(fit_evgam)
+summary(fit_evgam)
+
+
+
+
+```
+
+
+```{r}
+
+p <- predict(fit_evgam, newdata = test, type = "response")
+head(p)
+prob_threshold <- matrix(0, nrow=nrow(p), ncol = 1)
+for (i in 1:nrow(p)){
+  prob_threshold[i]= pgpd(threshold, p[i,2], p[i,1], log = FALSE)
+}
+prob_threshold
+
+```
+
+
+
+vgam & g extreme value distribution for 10 largest ba
+
+```{r}
+# ba1 <- odd_years %>% 
+#   group_by(date) %>%
+#   dplyr::summarise(ba1 = max(BA)) 
+# 
+# ba1 <- odd_years %>% 
+#   group_by(date) %>%
+#   dplyr::summarise(ba2 = nth(BA, 2))
+
+topba<- odd_years%>%
+    group_by(date) %>%
+    top_n(10, BA)
+
+ba <- topba %>% 
+  group_by(date) %>%
+  summarise(ba1 = max(BA)) 
+
+for (i in 2:10) {
+  ban <- topba %>%
+   group_by(date) %>%
+   arrange(desc(BA), .by_group = TRUE) %>%
+   slice(., i) 
+  ba<-cbind(ba,ban$BA)
+  names(ba)[i] <- paste("ba",i-1, sep = "")
+}
+
+names(ba)[11] <- "ba10"
+ba <- separate(ba, date, sep="-", into = c("year", "month"))
+library(lubridate)
+ba$year <- as.numeric(ba$year)
+ba$month <- as.numeric(ba$month)
+ba$date <- with(ba, sprintf("%d-%02d", year, month))
+
+```
+
+
+
+```{r}
+
+gamfit <- vgam(log(cbind(ba1,ba2,ba3,ba4,ba5,ba6,ba7,ba8,ba9,ba10)) ~ s(year)+s(month), gumbel(R = 31, mpv = TRUE),data = ba )
+
+summary(gamfit)
+head(fitted(gamfit), 7)
+# 
+# Hlist <- list("(Intercept)" = diag(2), "s(year, df = 9)" = rbind(1, 0),"poly(year, 2)" = rbind(0, 1))
+# fit2 <- vgam(cbind(ba1,ba2,ba3,ba4,ba5) ~ s(year, df = 9) + poly(year, 2), gumbel(R = 31, mpv = TRUE),data = ba, na.action = na.pass, constraints = Hlist)
+
+
+```
+
+
+
+```{r}
+## quantile plot
+n<-1:nrow(ba)
+with(ba, matplot(n, log(cbind(ba1,ba2,ba3,ba4,ba5,ba6,ba7,ba8,ba9,ba10)), type = "p", col = "blue", pch = 16, ylab = "burned area (acres)"))
+mycols <- c(1,2,3)
+with(ba, matlines(n, fitted(gamfit), lty = 1, col = mycols))
+# plot(ba4 ~ date, data = ba, ylim = range(ba1), pch = "4", col = "blue")
+
+```
+
+
+
+
+
+```{r } 
+# library(mgcv)
+# overthresholdmodel1 <- bam(overthreshold ~ s(lat,lon, k = 100) + s(temp) + s(pressure) + s(precip) + s(wind)+ s(pot_evap)+s(solar_rad) + s(area) , data = train_data, method = "REML", family = binomial)
+# 
+# summary(overthresholdmodel1)
+# 
+# overthresholdpredict <- predict(overthresholdmodel, newdata = test, type = "response") #predicting prb that BA > threshold
+# 
+# test$overthresholdpredict <- overthresholdpredict
+# 
+# table_mat <- table(test$overthreshold, overthresholdpredict > 0.2)
+# table_mat
+# 
+# filter(test, overthresholdpredict > 0.2)
+# 
+# 
+# accuracy_Test <- sum(diag(table_mat)) / sum(table_mat)
+# accuracy_Test
+# 
+# 
+# ROCRpred <- prediction(overthresholdpredict, test$overthreshold)
+# ROCRperf <- performance(ROCRpred, 'tpr', 'fpr')
+# plot(ROCRperf, colorize = TRUE, text.adj = c(-0.2, 1.7))
+# 
+# rm(table_mat, accuracy_Test)
+# 
+b<-glm(overthreshold~month + year+lat+lon+thermal_rad+ altiMean+ area+ altiSD+temp+solar_rad+pressure+lc1+lc2+lc3+lc5+lc6+lc7+lc8+lc9+lc10+lc11+lc12+lc13+lc14+lc15+lc16+lc18, data = train_data, family = binomial)
+step(b)
+
+
+
+```
+
+
+
+
+
+

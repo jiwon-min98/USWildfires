@@ -1,0 +1,200 @@
+---
+title: "GAMs"
+author: "Ji Won"
+date: "3/30/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(mgcv)
+library(dplyr)
+library(tidyverse)
+library(caret)
+```
+
+
+```{r, echo=FALSE}
+rm(list = ls())
+load("~/Desktop/Project/data_train.RData")
+data_train_DF<- data_train_DF %>%
+  mutate(wind = sqrt(clim1^2 + clim2^2)) %>%
+  dplyr::rename(dew_temp = clim3,
+         temp = clim4,
+         pot_evap = clim5,
+         solar_rad = clim6,
+         thermal_rad = clim7,
+         pressure = clim8,
+         evap = clim9,
+         precip = clim10
+  ) %>%
+  subset(select = -c(clim1, clim2) )
+
+
+
+dat_scaled <- as.data.frame(scale(data_train_DF[,c(26:36)]))
+dat_scaled <- cbind(data_train_DF[,c(1:25)], dat_scaled)
+
+odd_years <- filter(dat_scaled, year %% 2 == 1)
+dat_scaled$fire <- ifelse(dat_scaled$CNT>0, 1, 0)
+
+train_data <- filter(dat_scaled, year == c(1995, 2005, 2015, 2001, 1999))
+odd_years <- filter(dat_scaled, year %%2 ==1)
+test <- filter(dat_scaled, year == c(1997,2007, 2003, 2011))
+```
+
+
+## Logistic BAMs for fire classification
+
+
+```{r pressure, echo=FALSE}
+library(car)
+m <- bam(fire ~ s(lat,lon, k = 50)+s(month, k=7) + s(temp) + s(pressure) + s(precip) + s(wind)+s(pot_evap)+s(solar_rad) + s(altiSD) + s(area) +s(lc1) + s(lc2) + s(lc3) + s(lc4) + s(lc5)+s(lc7)+ s(lc8)+ s(lc9)+ s(lc11, k = 20) + s(lc12, k = 20) + s(lc13) + s(lc14) + s(lc15) + s(lc16, k = 6)+ s(lc17)+s(lc18), data = train_data, method = "REML", family = binomial)
+summary(m)
+gam.check(m)
+plot(m, shade = TRUE, rug = TRUE)
+```
+
+
+```{r}
+m2 <- bam(fire ~ s(lat,lon, k = 100) + s(temp) +s(dew_temp) + s(pressure) + s(precip) + s(pot_evap)+s(solar_rad) + s(altiMean) + s(area) +s(lc1) + s(lc2) + s(lc5)+s(lc7)+  s(lc9)+ s(lc11, k = 20) + s(lc12, k = 20) + s(lc13) + s(lc14) + s(lc16)+ s(lc17)+s(lc18), data = train_data, method = "REML", family = binomial)
+summary(m2)
+gam.check(m2)
+plot(m2, shade = TRUE, rug = TRUE)
+```
+
+
+
+
+```{r}
+m3 <- bam(fire ~ te(lat,lon) + s(temp) +s(dew_temp) + s(pressure) + s(precip) + s(pot_evap)+s(solar_rad) + s(altiMean, k = 20) + s(area) +s(lc1) + s(lc2, k = 20) + s(lc5)+s(lc7)+  s(lc9)+ s(lc11, k = 20) + s(lc12, k = 20) + s(lc13) + s(lc14) + s(lc16)+ s(lc17)+s(lc18, k = 20), data = train_data, method = "REML", family = binomial)
+summary(m3)
+gam.check(m3)
+
+```
+
+```{r}
+m4 <- bam(fire ~ te(lat,lon) + s(temp) +s(dew_temp) + s(pressure) + s(precip) + s(pot_evap)+s(solar_rad)+ s(area) +s(lc1) + s(lc2, k = 20) + s(lc5)+s(lc7)+  s(lc9)+ s(lc11, k = 20) + s(lc12, k = 20) + s(lc13) + s(lc14) + s(lc16, k = 22)+ s(lc17)+s(lc18, k = 30), data = train_data, method = "REML", familiy = binomial)
+summary(m4)
+gam.check(m4)
+
+```
+
+```{r}
+AIC(m)
+AIC(m2)
+AIC(m3)
+AIC(m4)
+```
+
+```{r}
+
+test_data <- dat_scaled %>% filter(year == c(1997,2007))
+
+predicted2007 <- predict(m3,newdata = data_predict,type="response")
+head(predicted2007)
+
+
+pred = rep(0, dim(data_predict)[1])
+pred[predicted2007 > .5] = 1
+
+table(pred)
+table(data_predict$fire)
+
+```
+
+
+
+```{r pressure, echo=FALSE}
+library(car)
+m <- bam(CNT ~ s(lat,lon, k = 50)+s(month, k=7) + s(temp) + s(pressure) + s(precip) + s(wind)+s(pot_evap)+s(solar_rad) + s(altiSD) + s(area) +s(lc1) + s(lc2) + lc3 + lc4 + s(lc5)+s(lc7)+ s(lc8)+ s(lc9)+ s(lc11, k = 20) + s(lc12, k = 20) + s(lc13) + lc14 + lc15 + lc16+lc18, data = train_data, method = "REML", family = poisson)
+summary(m)
+gam.check(m)
+plot(m, shade = TRUE, rug = TRUE)
+```
+
+
+```{r}
+library(gbm)
+gbm1 <- gbm(CNT ~.-BA, data = train_data, distribution = "poisson", n.trees = 500, shrinkage = 0.1,             
+            interaction.depth = 3, bag.fraction = 0.5, train.fraction = 0.5,  
+            n.minobsinnode = 10, cv.folds = 5, keep.data = TRUE)  
+best.iter <- gbm.perf(gbm1, method = "cv")
+print(best.iter)
+p_gbm1 <- predict(gbm1, newdata = test, n.trees = best.iter, type = "response")
+
+p_gbm1<- predict_cnt_prob_poisson(gbm1, test)
+
+score_gbm1 <- get_score_cnt(p, test$CNT, u_cnt, weights_cnt)
+```
+
+```{r}
+predict_ba_prob_gaussian_2 = function(model, test, type){
+  prediction = predict(model, test, type=type)
+  ba_probabilities = matrix(0, nrow(test), length(u_ba))
+  for (i in 1:nrow(test)){
+    mu = prediction[i]   #$fit[i]
+   #sd = prediction$se.fit[i]
+    sd = sqrt(sum((mu-mean(prediction))^2)/(length(test)-1))
+    ba_probabilities[i,] = pnorm(log(u_ba+1), mean = mu, sd = sd)
+  }
+  ba_probabilities
+}
+```
+
+
+#GBM for ba
+```{r}
+ba_gbm <- gbm(log(BA+1)~.-CNT, data = train_data, distribution = "gaussian", n.trees = 500, shrinkage = 0.1,             
+            interaction.depth = 3, bag.fraction = 0.5, train.fraction = 0.5,  
+            n.minobsinnode = 10, cv.folds = 5, keep.data = TRUE)  
+
+#ba_gbm_p <- predict(ba_gbm, newdata = test, n.trees = best.iter, type = "response")
+
+p <- predict_ba_prob_gaussian_2(ba_gbm, test,"response")
+
+score_ba_gbm <- get_score_ba(p, test$BA, u_ba, weights_ba)
+```
+```
+
+
+
+
+#BAM for burnt area
+
+##model1
+
+```{r}
+m <- bam(log(BA+1) ~ te(lat,lon) + s(temp) +s(dew_temp) + s(pressure) + s(precip) + s(pot_evap)+s(solar_rad) + s(altiMean, k = 20) + s(area) +s(lc1) + s(lc2, k = 20) + s(lc5)+s(lc7)+  s(lc9)+ s(lc11, k = 20) + s(lc12, k = 20) + s(lc13) + s(lc14) + s(lc16)+ s(lc17)+s(lc18, k = 20), data = train_data, method = "REML", family = gaussian)
+```
+
+
+```{r}
+summary(m)
+gam.check(m)
+```
+
+```{r}
+p <- predict_ba_prob_gaussian_1(m, test)
+```
+
+
+```{r}
+score<-get_score_ba(p, test$BA, u_ba, weights_ba)
+```
+
+
+##model2
+```{r}
+m2 <- bam(log(BA+1) ~ s(lat) + s(temp) +s(dew_temp) + s(pressure) + s(precip) + s(pot_evap)+s(solar_rad) + s(altiMean, k = 20) + s(area) +s(lc2, k = 20) + s(lc5)+s(lc7)+  s(lc9)+ s(lc11, k = 20) + s(lc12, k = 20) + s(lc13) + s(lc14) + s(lc16, k = 20)+ s(lc17)+s(lc18, k = 20), data = train_data, method = "REML", family = gaussian)
+```
+
+
+```{r}
+p2 <- predict_ba_prob_gaussian_1(m2, test)
+```
+
+
+```{r}
+score2<-get_score_ba(p2, test$BA, u_ba, weights_ba)
+```

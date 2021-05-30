@@ -1,0 +1,120 @@
+---
+title: "Logistic regression for fires"
+author: "Ji Won"
+date: "4/3/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr) 
+library(InformationValue)
+library(car)
+```
+
+## R Markdown
+
+
+```{r, echo = FALSE}
+load("~/Desktop/Project/data_train.RData")
+
+data_train_DF<- data_train_DF %>%
+  mutate(wind = sqrt(clim1^2 + clim2^2)) %>%
+  dplyr::rename(dew_temp = clim3,
+         temp = clim4,
+         pot_evap = clim5,
+         solar_rad = clim6,
+         thermal_rad = clim7,
+         pressure = clim8,
+         evap = clim9,
+         precip = clim10
+  )
+
+data_train_DF <- subset(data_train_DF, select = -c(clim1, clim2) )
+
+odd_years <- data_train_DF %>% filter(year %% 2 ==1)
+odd_years$fire <- ifelse(odd$CNT>0, 1, 0)
+
+
+no_na <- na.omit(odd)  
+data <- filter(odd, year == 1995 | year == 2005 |year == 2015)
+
+fire_data <- subset(data, select = -c(CNT, BA, month, year))
+table(fire_data$fire)
+```
+
+## Logistic regression GLM 
+
+```{r, echo = FALSE}
+model.null = glm(fire ~ 1, data= fire_data, family = binomial(link = "logit"))
+
+model.full = glm(fire ~., data= fire_data, family = binomial(link = "logit"))
+
+step(model.null, scope = list(upper=model.full), direction="both", test="Chisq",  data=fire_data)
+
+```
+
+
+```{r}
+model.final <- glm(fire ~ pot_evap + lc7 + thermal_rad + pressure + lc11 + lc2 + 
+    lc17 + evap + area + lc15 + altiSD + lc14 + lon + lc9 + solar_rad + 
+    lc18 + wind + lc12 + lc16 + lc8 + lat + dew_temp + temp + 
+    precip + lc13 + lc1 + lc5 + lc4 + lc3 + lc6, family = binomial(link = "logit"), 
+    data = fire_data)
+summary(model.final)
+```
+## Diagnostics
+
+#Analysis of variance of individual
+```{r}
+Anova(model.final, type="II", test="Wald")
+plot(fitted(model.final), rstandard(model.final))
+```
+
+## Predicting
+
+```{r}
+test <- odd_years %>% filter(year == 2007)
+logistic.probs <- predict(model.final, newdata = test, type = "response")
+
+logistic.pred = rep(0, nrow(test))
+logistic.pred[logistic.probs > 0.5] = 1
+table(logistic.pred)
+
+table(test$fire)
+
+prediction <- cbind(test$fire, logistic.pred)
+
+```
+
+
+```{r}
+nozero<-filter(data, CNT >0)
+model<- glm(CNT ~ pot_evap + lc7 + thermal_rad + pressure + lc11 + lc2 + 
+    lc17 + evap + area + lc15 + altiSD + lc14 + lon + lc9 + solar_rad + 
+    lc18 + wind + lc12 + lc16 + lc8 + lat + dew_temp + temp + 
+    precip + lc13 + lc1 + lc5 + lc4 + lc3 + lc6, family = poisson(link = "log"), 
+    data =nozero)
+summary(model)
+
+predict <- predict(model, newdata=test, type = "link")
+head(predict, 50)
+prob <- add_probs(predict, fit, q = 20)
+
+X <- matrix(0, nrow = 24521, ncol = 28)
+
+
+
+
+```
+
+
+
+```{r}
+logisticglm <- glm(
+  fire ~ pressure + lon+ lat+ thermal_rad+ dew_temp,
+  family = "binomial", 
+  data = train_data
+  )
+
+```
