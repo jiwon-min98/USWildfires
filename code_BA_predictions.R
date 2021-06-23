@@ -8,6 +8,7 @@ library(VGAM)
 library(caret)
 library(naivebayes)
 library(POT)
+library(foreach)
 library(doParallel)
 
 # loading the dataset
@@ -70,25 +71,31 @@ predict_ba_prob_gaussian_gbm1 = function(model, test){
 
 # gbm models to obtain probabilities Prob(BA < u)
 #without CNT
-m_gbm1 <- gbm(log(BA+1) ~ .-CNT, data = train, distribution = "gaussian", interaction.depth = 6, n.trees=5000, n.minobsinnode = 10, shrinkage = 0.1)
+
+no_cores <- detectCores() - 2  
+cl <- makeCluster(no_cores)  
+registerDoParallel(cl)
+start.time1 <- Sys.time()
+m_gbm1 <- gbm(log(BA+1) ~ .-CNT, data = train, distribution = "gaussian", interaction.depth = 6, n.trees=2000, n.minobsinnode = 10, shrinkage = 0.1,
+              n.cores = no_cores)
+end.time1 <- Sys.time()
+
+stopCluster(cl)
 p_gbm1 <- predict_ba_prob_gaussian_gbm1(m_gbm1, test1)
 
 # with CNT
-m_gbm2 <- gbm(log(BA+1) ~., data = train, distribution = "gaussian", interaction.depth = 6, n.trees=5000, n.minobsinnode = 10, shrinkage = 0.1)
+no_cores <- detectCores() - 2  
+cl <- makeCluster(no_cores)  
+registerDoParallel(cl)
+start.time2 <- Sys.time()
+m_gbm2 <- gbm(log(BA+1) ~., data = train, distribution = "gaussian", interaction.depth = 6, n.trees=2000, n.minobsinnode = 10, shrinkage = 0.1, n.cores = no_cores)
+end.time2 <- Sys.time()
+time.taken2 <- end.time2 - start.time2
+stopCluster(cl)
 p_gbm2 <- predict_ba_prob_gaussian_gbm1(m_gbm2, test2)
 
 
-
-# With extremes
-# below <- train %>% filter(BA <= threshold)
-# m_gbm_nocnt <- gbm(log(BA+1) ~ .-CNT-overthreshold, data = below, distribution = "gamma", interaction.depth = 6, n.trees=1000, n.minobsinnode = 10, shrinkage = 0.1)
-# p_gbm_nocnt <- predict_ba_prob_gaussian_gbm1(m_gbm_nocnt, test)
-# 
-# m_gbm_cnt <- gbm(log(BA+1) ~.-overthreshold, data = below, distribution = "gamma", interaction.depth = 6, n.trees=1000, n.minobsinnode = 10, shrinkage = 0.1)
-# m_gbm_cnt <- predict_ba_prob_gaussian_gbm1(m_gbm_cnt, test)
-
 #naive bayes
-
 # naive bayes for binary classification of Prob(BA > threshold)
 train$overthreshold <- as.factor(ifelse(train$BA > threshold, 1, 0))
 
@@ -96,15 +103,8 @@ naivebayes_threshold <- naive_bayes(overthreshold ~.-BA-CNT, data = train, useke
 p_naivebayes1 <- predict(naivebayes_threshold, test1, 'prob')
 p_naivebayes2 <- predict(naivebayes_threshold, test2, 'prob')
 
-# test1$overthreshold <- p_naivebayes1[,2]
-# test2$overthreshold <- p_naivebayes2[,2]
-# test1$overthreshold <- NULL
-# test2$overthreshold <- NULL
-
 p_naivebayes <- predict(naivebayes_threshold, test, 'prob')
-#test$overthreshold <- p_naivebayes[,2]
-# test$overthreshold <- NULL
-# train$overthreshold<- NULL
+train$overthreshold <- NULL
 
 
 # vglm modeling of extremes with generalized pareto distribution
@@ -128,7 +128,10 @@ predictedvglm1 <- predict(modelvglm1, untransform = TRUE, newdata = new1) #predi
 predictedvglm2 <- predict(modelvglm2, untransform = TRUE, newdata = new2)
 
 
+
+
 # calculating conditional probabilities P(BA <  u_ba_threshold | BA > threshold )
+u_ba_threshold <- subset(u_ba, u_ba > threshold)
 x = matrix(0, nrow(new1), length(u_ba_threshold))
 for (i in 1:nrow(predictedvglm1)){
   for (j in 1:length(u_ba_threshold))
@@ -141,7 +144,7 @@ for (i in 1:nrow(predictedvglm2)){
     y[i,j] <- pgpd(u_ba_threshold[j], scale = predictedvglm2[i,1] , shape = predictedvglm2[i,2]) 
 }
 
-# calculating probability P(BA <  u_ba_threshold | BA > threshold }
+# calculating probability P(BA <  u_ba_threshold | BA > threshold )
 prob_threshold1 = matrix(0, nrow(x), length(u_ba_threshold))
 for (i in 1:nrow(x)){
   prob_threshold1[i,] <- x[i,] * p_naivebayes1[i,2]
@@ -153,11 +156,10 @@ for (i in 1:nrow(y)){
 }
 
 # replacing rows of extreme cases for u_ba > threshold
-u_ba_threshold <- subset(u_ba, u_ba > threshold)
 l<-length(u_ba_threshold)
 
 # without CNT
-a <- p_gbm1
+a <- p_gbm1 
 a[threshold_rows1, (29-l):28] <- a[threshold_rows1, 28-l] +prob_threshold1
 
 p1 <- a
@@ -217,11 +219,11 @@ for (i in 1:nrow(test)){
 # If CNT > 0, then P(BA = 0) = 0
 for (i in 1:nrow(test)){
   if (test$CNT[i] > 0 & !is.na(test$CNT[i]))
-      matrix[i,1] = 0
+    matrix[i,1] = 0
 }
 
 
-prediction_ba<- matrix
+prediction_ba <- matrix
 
 save(prediction_ba, file = "/Users/jiwonmin/Desktop/Project/predictions.RData")
 

@@ -1,0 +1,240 @@
+---
+title: "R Temporary Predictions "
+output: html_notebook
+---
+
+
+```{r setup, echo=FALSE}
+
+library(tidyr)
+library(dplyr)
+library(randomForest)
+library(mgcv)
+library(class)
+library(gbm)
+library(doParallel)
+load("/Users/victoriabarenne/Documents/BachelorProject/EDA/dt.RData")
+
+
+```
+
+
+#Data Manipulation
+
+```{r, echo=FALSE}
+data_train_DF<-data_train_DF%>%
+   rename(NSwind=clim1, WEwind=clim2, dew_temperature=clim3, temperature=clim4, 
+          potential_evaporation=clim5, solar_radiation= clim6, 
+          thermal_radiation=clim7, pressure=clim8, evaporation=clim9, 
+          precipitation=clim10)
+
+head(data_train_DF)
+
+```
+
+```{r, echo=FALSE}
+
+dt<- data_train_DF%>%
+  mutate(Wspeed=(sqrt(NSwind^2+WEwind^2)))%>%
+  select(-NSwind, -WEwind)%>%
+  mutate(RH=100*exp(17.625*(dew_temperature-273.15)/(dew_temperature-39.11))/
+           exp(17.625*(temperature-273.15)/(temperature-39.11))  )
+
+dt<- dt%>%
+  mutate(temperature=temperature-273.15, dew_temperature=dew_temperature-273.15, 
+         pressure=pressure/1000)%>%
+  mutate(evaporation=evaporation*1000,potential_evaporation=potential_evaporation*1000,
+         precipitation=precipitation*1000)%>%
+  mutate(thermal_radiation=thermal_radiation/1000000, 
+         solar_radiation=solar_radiation/1000000)%>%
+  mutate(lc1=lc1*100,lc2=lc2*100,lc3=lc3*100,lc4=lc4*100,lc5=lc5*100,lc6=lc6*100,
+         lc7=lc7*100,lc8=lc8*100,lc9=lc9*100,lc10=lc10*100,lc11=lc11*100,lc12=lc12*100,
+         lc13=lc13*100,lc14=lc14*100,lc15=lc15*100,lc16=lc16*100,lc17=lc17*100,
+         lc18=lc18*100)%>%
+  mutate(altiMean=(altiMean-mean(altiMean))/sd(altiMean),
+         altiSD=(altiSD-mean(altiSD))/sd(altiSD))
+
+head(dt)
+
+
+```
+
+```{r, echo=FALSE}
+dt_complete<- dt%>%
+  drop_na()
+
+dt_testing<- dt%>%
+  filter(is.na(BA) & !is.na(CNT))
+head(dt_testing)
+
+
+dt_topredict<- dt%>%
+  filter(is.na(CNT))
+head(dt_topredict)
+
+```
+
+```{r}
+dt_training<- dt_complete%>%
+  group_by(lon, lat, month)%>%
+  mutate(mean_monthly_fires= mean(CNT))
+
+for (m in 3:9){
+  for (L in seq(-124.75, -66.75, 0.5)){
+    for (l in seq(25.25, 49.25, 0.5)){
+      dt_topredict$mean_monthly_fires[dt_topredict$lon==L &
+                                      dt_topredict$lat==l &
+                                      dt_topredict$month==m] <- 
+        dt_training$mean_monthly_fires[dt_training$lon==L &
+                                         dt_training$lat==l &
+                                         dt_training$month==m][1]
+      
+      dt_testing$mean_monthly_fires[dt_testing$lon==L &
+                                      dt_testing$lat==l &
+                                      dt_testing$month==m] <- 
+        dt_training$mean_monthly_fires[dt_training$lon==L &
+                                         dt_training$lat==l &
+                                         dt_training$month==m][1]      
+      
+
+    }
+  }
+}
+head(dt_training)
+head(dt_testing)
+head(dt_topredict)
+```
+
+#Scoring functions
+
+```{r CNT Scoring, echo=FALSE}
+
+get_score_cnt = function(prediction_cnt, obs, u_cnt, weights_cnt){
+  distr_obs = c()
+  for(k in 1:length(u_cnt)){
+    distr_obs = cbind(distr_obs, ifelse(u_cnt[k] < obs, 0, 1))
+  }
+  weights_mat = matrix(weights_cnt, ncol = length(weights_cnt), nrow = length(obs), byrow = TRUE)
+  score_cnt = sum(weights_mat * (distr_obs - prediction_cnt)^2)
+  score_cnt
+}
+
+get_scaled_score_cnt= function (prediction_cnt, obs, u_cnt, weights_cnt){
+  get_score_cnt(prediction_cnt, obs, u_cnt, weights_cnt)/length(obs)
+}
+```
+
+
+```{r BA Scoring, echo=FALSE}
+
+get_score_ba = function(prediction_ba, obs, u_ba, weights_ba){
+  distr_obs = c()
+  for(k in 1:length(u_ba)){
+    distr_obs = cbind(distr_obs, ifelse(u_ba[k] < obs, 0, 1))
+  }
+  weights_mat = matrix(weights_ba, ncol = length(weights_ba), nrow = length(obs), byrow = TRUE)
+  score_ba = sum(weights_mat * (distr_obs - prediction_ba)^2)
+  score_ba
+} 
+
+get_scaled_score_ba= function (prediction_cnt, obs, u_cnt, weights_cnt){
+  get_score_ba(prediction_cnt, obs, u_cnt, weights_cnt)/length(obs)
+}
+
+```
+
+
+```{r poisson probabilities, echo=FALSE}
+poisson_probabilities<- function(poisson_predictions){
+  p<- matrix(0,length(poisson_predictions), length(u_cnt))
+  for (i in 1:length(poisson_predictions)){
+    mu<- poisson_predictions[i]
+    p[i,] = ppois(u_cnt, lambda = mu, log = FALSE)
+  }
+  p
+}
+```
+
+
+#Boosting Models
+```{r}
+cl<- detectCores() %>%
+  -1 %>%
+  makeCluster()
+
+
+registerDoParallel(6)
+
+modelwithoutBA<- gbm(CNT~.-BA, distribution = "poisson",
+                     data=dt_training,
+                     n.trees=10000, 
+                     interaction.depth=6,
+                     n.cores=6)
+stopImplicitCluster()
+if (!is.null(cl)) stopCluster(cl)
+
+summary(modelwithoutBA)
+
+```
+
+
+```{r}
+cl<- detectCores() %>%
+  -1 %>%
+  makeCluster()
+
+
+registerDoParallel(6)
+
+modelwithBA<- gbm(CNT~., distribution = "poisson",
+                  data=dt_training,
+                  n.trees=10000, 
+                  interaction.depth=6,
+                  n.cores=6)
+stopImplicitCluster()
+if (!is.null(cl)) stopCluster(cl)
+
+summary(modelwithBA)
+
+```
+
+```{r, echo=FALSE}
+response_cnt<- c()
+
+response_cnt[which(is.na(dt_topredict$BA))]<- 
+  predict(modelwithoutBA,
+          newdata= dt_topredict[which(is.na(dt_topredict$BA)),],
+          n.trees=3500,
+          type="response")
+
+response_cnt[which(!is.na(dt_topredict$BA))]<-
+  predict(modelwithBA,
+          newdata= dt_topredict[which(!is.na(dt_topredict$BA)),],
+          n.trees = 3500,
+          type= "response")
+
+response_cnt[which(dt_topredict$BA==0)]<-0
+ 
+prediction_cnt<- poisson_probabilities(response_cnt)     
+```
+
+```{r, echo=FALSE}
+test_cnt<- c()
+
+test_cnt[which(is.na(dt_testing$BA))]<- 
+  predict(modelwithoutBA,
+          newdata= dt_testing[which(is.na(dt_testing$BA)),],
+          n.trees=3500,
+          type="response")
+
+test_cnt[which(!is.na(dt_testing$BA))]<-
+  predict(modelwithBA,
+          newdata= dt_testing[which(!is.na(dt_testing$BA)),],
+          n.trees = 3500,
+          type= "response")
+
+ 
+test_predictions<- poisson_probabilities(test_cnt)     
+score_test<- get_scaled_score_cnt(test_predictions, dt_testing$CNT, u_cnt, weights_cnt)
+```
+
